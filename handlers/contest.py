@@ -9,7 +9,7 @@ from db.models import Calendar, Contest, Registration, async_session, ensure_use
 from handlers.common import safe_edit_text
 from keyboards.inline import to_calendar_settings_kb, warning_kb
 from services.caldav_service import add_event, find_by_uid, friendly_error
-from services.text import to_utc_aware
+from services.text import format_contest_info, to_utc_aware
 
 router = Router()
 
@@ -79,13 +79,16 @@ async def register_for_contest(callback: CallbackQuery) -> None:
     await callback.answer()
 
     if existing is not None:
-        await safe_edit_text(callback.message, "✅ Участие подтверждено!")
+        await safe_edit_text(
+            callback.message,
+            f"✅ Участие подтверждено!\n\n{format_contest_info(contest)}",
+        )
         return
 
     if not calendars:
         await safe_edit_text(
             callback.message,
-            "✅ Участие подтверждено!\n\n"
+            f"✅ Участие подтверждено!\n\n{format_contest_info(contest)}\n\n"
             "⚠️ Подключите календарь в профиле, чтобы события контестов автоматически попадали в него.",
             reply_markup=to_calendar_settings_kb(),
         )
@@ -99,7 +102,10 @@ async def register_for_contest(callback: CallbackQuery) -> None:
         "current": None,
         "started_at": datetime.now(timezone.utc).replace(tzinfo=None),
     }
-    await safe_edit_text(callback.message, "✅ Участие подтверждено! ⏳ Добавляю события в календари…")
+    await safe_edit_text(
+        callback.message,
+        f"✅ Участие подтверждено! ⏳ Добавляю события в календари…\n\n{format_contest_info(contest)}",
+    )
     await _process_next(tg_id, callback.message)
 
 
@@ -130,6 +136,7 @@ async def _process_next(tg_id: int, message: Message) -> None:
                 await safe_edit_text(
                     message,
                     f"⚠️ В календаре «{calendar_display(cal)}» уже есть событие для контеста «{contest.name}».\n\n"
+                    f"{format_contest_info(contest)}\n\n"
                     "Что сделать?",
                     reply_markup=warning_kb(cal.id),
                 )
@@ -221,7 +228,10 @@ async def _show_summary(tg_id: int, message: Message) -> None:
     warnings = [t for t in state["tasks"] if t["dup"] or t["status"] == "not_added"]
     errors = [t for t in state["tasks"] if t["status"] == "error"]
 
-    parts = ["✅ Участие подтверждено! Уведомления о старте придут автоматически."]
+    parts = [
+        "✅ Участие подтверждено! Уведомления о старте придут автоматически.",
+        format_contest_info(state["contest"]),
+    ]
     if added:
         parts.append(
             "✅ Успешно добавлено в:\n" + "\n".join(f"• {calendar_display(t['calendar'])}" for t in added)

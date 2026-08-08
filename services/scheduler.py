@@ -17,7 +17,7 @@ from db.models import (
 )
 from keyboards.inline import contest_announce_kb, notify_settings_shortcut_kb
 from services.cf_parser import parse_contests
-from services.text import format_dt_msk, format_duration
+from services.text import format_contest_info
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +26,9 @@ async def broadcast_new_contests(bot: Bot, contests: list[Contest]) -> None:
     async with async_session() as session:
         tg_ids = list((await session.scalars(select(User.tg_id))).all())
     for contest in contests:
-        lines = ["🔥 Новый контест на Codeforces!", "", f"🏆 {contest.name}", f"📋 Тип: {contest.type}"]
-        if contest.start_time is not None:
-            lines.append(f"🕒 {format_dt_msk(contest.start_time)} (МСК)")
-        lines.append(f"⏱ {format_duration(contest.duration_seconds)}")
-        lines.append(f"🔗 https://codeforces.com/contest/{contest.cf_id}")
-        text = "\n".join(lines)
+        text = "\n".join(
+            ["🔥 Новый контест на Codeforces!", "", format_contest_info(contest)]
+        )
         for tg_id in tg_ids:
             try:
                 await bot.send_message(tg_id, text, reply_markup=contest_announce_kb(contest.id))

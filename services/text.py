@@ -19,3 +19,12 @@ def format_duration(seconds: int) -> str:
 
 def format_dt_msk(dt: datetime) -> str:
     return to_utc_aware(dt).astimezone(MSK).strftime("%d.%m.%Y %H:%M")
+
+
+def format_contest_info(contest) -> str:
+    lines = [f"🏆 {contest.name}", f"📋 Тип: {contest.type}"]
+    if contest.start_time is not None:
+        lines.append(f"🕒 {format_dt_msk(contest.start_time)} (МСК)")
+    lines.append(f"⏱ {format_duration(contest.duration_seconds)}")
+    lines.append(f"🔗 https://codeforces.com/contest/{contest.cf_id}")
+    return "\n".join(lines)
