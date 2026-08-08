@@ -4,7 +4,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.types import ErrorEvent
 
-from config import BOT_TOKEN, SECRET_KEY
+from config import BOT_TOKEN
 from db.fsm_storage import SQLiteStorage
 from db.models import engine, init_db
 from handlers import calendar_setup, calendar_settings, contest, notify_settings, start
@@ -17,11 +17,6 @@ async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN не задан: export BOT_TOKEN=...")
-    if not SECRET_KEY:
-        logger.warning(
-            "SECRET_KEY не задан: пароли календарей будут храниться открытым текстом "
-            "(см. .env.example)"
-        )
     await init_db()
 
     bot = Bot(BOT_TOKEN)
