@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 
 from sqlalchemy import (
@@ -7,6 +8,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     select,
 )
@@ -17,6 +19,8 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from config import DB_URL
 
 DEFAULT_NOTIFY_OFFSETS = (60, 15, 5)
+
+logger = logging.getLogger(__name__)
 
 
 def utcnow() -> datetime:
@@ -44,7 +48,7 @@ class Calendar(Base):
     type: Mapped[str] = mapped_column(String(16))
     server_url: Mapped[str] = mapped_column(String(255))
     username: Mapped[str] = mapped_column(String(255))
-    password: Mapped[str] = mapped_column(String(255))
+    password: Mapped[str] = mapped_column(Text)
     key_hash: Mapped[str | None] = mapped_column(String(32), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
@@ -99,12 +103,25 @@ async_session = async_sessionmaker(engine, expire_on_commit=False)
 
 
 def _run_migrations(sync_conn) -> None:
-    users_cols = {row[1] for row in sync_conn.exec_driver_sql("PRAGMA table_info(users)")}
-    if "is_blocked" not in users_cols:
-        sync_conn.exec_driver_sql("ALTER TABLE users ADD COLUMN is_blocked BOOLEAN NOT NULL DEFAULT 0")
-    calendars_cols = {row[1] for row in sync_conn.exec_driver_sql("PRAGMA table_info(calendars)")}
-    if "key_hash" not in calendars_cols:
-        sync_conn.exec_driver_sql("ALTER TABLE calendars ADD COLUMN key_hash VARCHAR(32)")
+    if sync_conn.dialect.name == "sqlite":
+        users_cols = {row[1] for row in sync_conn.exec_driver_sql("PRAGMA table_info(users)")}
+        if "is_blocked" not in users_cols:
+            sync_conn.exec_driver_sql("ALTER TABLE users ADD COLUMN is_blocked BOOLEAN NOT NULL DEFAULT 0")
+        calendars_cols = {row[1] for row in sync_conn.exec_driver_sql("PRAGMA table_info(calendars)")}
+        if "key_hash" not in calendars_cols:
+            sync_conn.exec_driver_sql("ALTER TABLE calendars ADD COLUMN key_hash VARCHAR(32)")
+        return
+    for table, column, ddl in (
+        ("users", "is_blocked", "BOOLEAN NOT NULL DEFAULT false"),
+        ("calendars", "key_hash", "VARCHAR(32)"),
+    ):
+        try:
+            sync_conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ddl}")
+        except Exception:
+            try:
+                sync_conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+            except Exception as exc:
+                logger.warning("Migration failed for %s.%s: %s", table, column, exc)
 
 
 async def init_db() -> None:

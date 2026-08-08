@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from math import ceil
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramForbiddenError
+from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 from sqlalchemy import delete, select
 
 from config import PARSE_INTERVAL_SECONDS, REMIND_INTERVAL_SECONDS
@@ -29,6 +29,23 @@ _CLEANUP_INTERVAL_SECONDS = 86400
 _last_log_cleanup = 0.0
 
 
+async def _send_message(bot: Bot, tg_id: int, text: str, reply_markup=None) -> bool:
+    for _ in range(3):
+        try:
+            await bot.send_message(tg_id, text, reply_markup=reply_markup)
+            return True
+        except TelegramForbiddenError:
+            await mark_user_blocked(tg_id)
+            return False
+        except TelegramRetryAfter as exc:
+            await asyncio.sleep(exc.retry_after)
+        except Exception:
+            logger.exception("Failed to send message to user %s", tg_id)
+            return False
+    logger.error("Giving up sending message to user %s after retries", tg_id)
+    return False
+
+
 async def broadcast_new_contests(bot: Bot, contests: list[Contest]) -> None:
     async with async_session() as session:
         tg_ids = list(
@@ -43,12 +60,7 @@ async def broadcast_new_contests(bot: Bot, contests: list[Contest]) -> None:
             ["🔥 Новый контест на Codeforces!", "", format_contest_info(contest)]
         )
         for tg_id in tg_ids:
-            try:
-                await bot.send_message(tg_id, text, reply_markup=contest_announce_kb(contest.id))
-            except TelegramForbiddenError:
-                await mark_user_blocked(tg_id)
-            except Exception:
-                logger.exception("Failed to send contest announcement to user %s", tg_id)
+            await _send_message(bot, tg_id, text, reply_markup=contest_announce_kb(contest.id))
 
 
 async def send_reminders(bot: Bot) -> None:
@@ -101,13 +113,10 @@ async def send_reminders(bot: Bot) -> None:
                 f"🕒 Начало: {format_dt_msk(contest.start_time)} (МСК)\n\n"
                 f"🔗 https://codeforces.com/contest/{contest.cf_id}"
             )
-            try:
-                await bot.send_message(tg_id, text, reply_markup=notify_settings_shortcut_kb())
-            except TelegramForbiddenError:
-                await mark_user_blocked(tg_id)
-                continue
-            except Exception:
-                logger.exception("Failed to send reminder to user %s", tg_id)
+            delivered = await _send_message(
+                bot, tg_id, text, reply_markup=notify_settings_shortcut_kb()
+            )
+            if not delivered:
                 continue
             async with async_session() as session:
                 session.add(

@@ -1,6 +1,7 @@
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from db.models import NotifySetting, async_session, ensure_user_id
 from handlers.common import safe_edit_text
@@ -62,5 +63,8 @@ async def notif_toggle(callback: CallbackQuery) -> None:
                 )
                 return
             session.add(NotifySetting(user_id=user_id, offset_minutes=offset))
-            await session.commit()
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
     await notify_settings_menu(callback)

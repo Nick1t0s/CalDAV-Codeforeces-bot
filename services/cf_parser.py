@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import aiohttp
 from sqlalchemy import select
 
-from db.models import Contest, async_session
+from db.models import Contest, async_session, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -14,10 +14,16 @@ CF_CONTESTS_URL = "https://codeforces.com/api/contest.list"
 async def parse_contests() -> list[Contest]:
     async with aiohttp.ClientSession() as session:
         async with session.get(CF_CONTESTS_URL, timeout=aiohttp.ClientTimeout(total=30)) as response:
-            payload = await response.json()
+            if response.status != 200:
+                raise RuntimeError(f"Codeforces API HTTP error: {response.status}")
+            try:
+                payload = await response.json()
+            except (aiohttp.ContentTypeError, ValueError) as exc:
+                raise RuntimeError(f"Codeforces API returned non-JSON response: {exc}") from exc
     if payload.get("status") != "OK":
         raise RuntimeError(f"Codeforces API error: {payload.get('comment')}")
 
+    now = utcnow()
     new_before: list[Contest] = []
     async with async_session() as session:
         existing = {c.cf_id: c for c in (await session.scalars(select(Contest))).all()}
@@ -31,11 +37,12 @@ async def parse_contests() -> list[Contest]:
                 continue
             phase = item.get("phase", "") or ""
             start_ts = item.get("startTimeSeconds")
-            start = (
-                datetime.fromtimestamp(int(start_ts), tz=timezone.utc).replace(tzinfo=None)
-                if start_ts
-                else None
-            )
+            start = None
+            if start_ts:
+                try:
+                    start = datetime.fromtimestamp(int(start_ts), tz=timezone.utc).replace(tzinfo=None)
+                except (TypeError, ValueError):
+                    start = None
             try:
                 duration = int(item.get("durationSeconds", 0) or 0)
             except (TypeError, ValueError):
@@ -58,7 +65,12 @@ async def parse_contests() -> list[Contest]:
                 contest.phase = phase
                 contest.start_time = start
                 contest.duration_seconds = duration
-            if phase == "BEFORE" and not contest.announced:
+            if (
+                phase == "BEFORE"
+                and not contest.announced
+                and contest.start_time is not None
+                and contest.start_time > now
+            ):
                 contest.announced = True
                 new_before.append(contest)
         await session.commit()

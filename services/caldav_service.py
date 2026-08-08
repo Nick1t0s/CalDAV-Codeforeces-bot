@@ -66,7 +66,7 @@ def add_event(
 
 
 def friendly_error(exc: Exception) -> str:
-    logger.warning("CalDAV error: %s", exc, exc_info=True)
+    logger.warning("CalDAV error: %s", exc)
     if isinstance(exc, KeyChangedError):
         return KEY_CHANGED_MSG
     if isinstance(exc, AuthorizationError):

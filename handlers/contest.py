@@ -19,12 +19,12 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 PROCESSING_TIMEOUT_SECONDS = 300
-PROCESSING: dict[int, dict] = {}
-# Блокировка на пользователя: защищает от гонок, когда два нажатия «Буду участвовать»
-# обрабатываются параллельно и перезаписывают общий PROCESSING[tg_id] (двойное
-# добавление событий). Хранится навсегда — один объект (~200 байт) на уникального
-# пользователя, очистка при ожидающем хендлере небезопасна (см. _process_next).
-_LOCKS: dict[int, asyncio.Lock] = {}
+PROMPT_TIMEOUT_SECONDS = 120
+# Состояние обработки «Буду участвовать» на пользователя и контест: aiogram
+# обрабатывает апдейты конкурентно (create_task), поэтому запись ведётся по паре
+# (tg_id, contest_id), а сама обработка CalDAV запускается фоновой задачей —
+# нажатие на другой контест не блокируется текущей операцией.
+PROCESSING: dict[tuple[int, int], dict] = {}
 
 
 def _int_param(data: str) -> int | None:
@@ -39,9 +39,14 @@ def _is_stale(state: dict) -> bool:
     return age.total_seconds() > PROCESSING_TIMEOUT_SECONDS
 
 
-def _deadline_remaining(state: dict) -> float:
-    age = datetime.now(timezone.utc).replace(tzinfo=None) - state["started_at"]
-    return max(1.0, PROCESSING_TIMEOUT_SECONDS - age.total_seconds())
+def _prompt_remaining(state: dict) -> float:
+    age = datetime.now(timezone.utc).replace(tzinfo=None) - state.get("prompted_at", datetime.min)
+    return max(1.0, PROMPT_TIMEOUT_SECONDS - age.total_seconds())
+
+
+def _prompt_stale(state: dict) -> bool:
+    age = datetime.now(timezone.utc).replace(tzinfo=None) - state.get("prompted_at", datetime.min)
+    return age.total_seconds() > PROMPT_TIMEOUT_SECONDS
 
 
 def calendar_display(cal: Calendar) -> str:
@@ -62,15 +67,7 @@ async def register_for_contest(callback: CallbackQuery) -> None:
     if contest_id is None:
         await callback.answer("Неверные данные", show_alert=True)
         return
-    tg_id = callback.from_user.id
-    lock = _LOCKS.setdefault(tg_id, asyncio.Lock())
-    if lock.locked():
-        await callback.answer(
-            "❌ Слишком много нажатий! Операция уже выполняется, подождите", show_alert=True
-        )
-        return
-    async with lock:
-        await _register_for_contest(callback, tg_id, contest_id)
+    await _register_for_contest(callback, callback.from_user.id, contest_id)
 
 
 async def _register_for_contest(callback: CallbackQuery, tg_id: int, contest_id: int) -> None:
@@ -120,25 +117,27 @@ async def _register_for_contest(callback: CallbackQuery, tg_id: int, contest_id:
         return
 
     tasks = [{"calendar": cal, "status": "pending", "detail": "", "dup": False} for cal in calendars]
-    PROCESSING[tg_id] = {
+    PROCESSING[(tg_id, contest_id)] = {
         "contest": contest,
         "tasks": tasks,
         "pending": list(tasks),
         "current": None,
         "future": None,
+        "prompted_at": None,
         "started_at": datetime.now(timezone.utc).replace(tzinfo=None),
     }
     await safe_edit_text(
         callback.message,
         f"✅ Участие подтверждено! ⏳ Добавляю события в календари…\n\n{format_contest_info(contest)}",
     )
-    await _process_next(tg_id, callback.message)
+    asyncio.create_task(_process_next(tg_id, contest_id, callback.message))
 
 
-async def _process_next(tg_id: int, message: Message) -> None:
-    state = PROCESSING.get(tg_id)
+async def _process_next(tg_id: int, contest_id: int, message: Message) -> None:
+    key = (tg_id, contest_id)
+    state = PROCESSING.get(key)
     if state is None or _is_stale(state):
-        PROCESSING.pop(tg_id, None)
+        PROCESSING.pop(key, None)
         await safe_edit_text(
             message,
             "⏱ Операция прервана (таймаут обработки). Нажмите «Буду участвовать» ещё раз.",
@@ -165,23 +164,25 @@ async def _process_next(tg_id: int, message: Message) -> None:
             if exists:
                 task["status"] = "warning"
                 state["current"] = task
+                state["prompted_at"] = datetime.now(timezone.utc).replace(tzinfo=None)
                 state["future"] = asyncio.get_running_loop().create_future()
                 await safe_edit_text(
                     message,
                     f"⚠️ В календаре «{calendar_display(cal)}» уже есть событие для контеста «{contest.name}».\n\n"
                     f"{format_contest_info(contest)}\n\n"
                     "Что сделать?",
-                    reply_markup=warning_kb(cal.id),
+                    reply_markup=warning_kb(cal.id, contest_id),
                 )
                 try:
                     add_duplicate = await asyncio.wait_for(
-                        state["future"], timeout=_deadline_remaining(state)
+                        state["future"], timeout=_prompt_remaining(state)
                     )
                 except asyncio.TimeoutError:
                     add_duplicate = False
                 finally:
                     state["current"] = None
                     state["future"] = None
+                    state["prompted_at"] = None
                 if add_duplicate:
                     times = _event_times(contest)
                     if times is None:
@@ -241,9 +242,9 @@ async def _process_next(tg_id: int, message: Message) -> None:
             except Exception as exc:
                 task["status"] = "error"
                 task["detail"] = friendly_error(exc)
-        await _show_summary(tg_id, message)
+        await _show_summary(tg_id, contest_id, message)
     finally:
-        PROCESSING.pop(tg_id, None)
+        PROCESSING.pop((tg_id, contest_id), None)
 
 
 @router.callback_query(F.data.startswith("warn_add:"))
@@ -258,16 +259,21 @@ async def warn_skip(callback: CallbackQuery) -> None:
 
 async def _warn_decision(callback: CallbackQuery, add_duplicate: bool) -> None:
     tg_id = callback.from_user.id
-    cal_id = _int_param(callback.data)
-    if cal_id is None:
+    parts = callback.data.split(":")
+    try:
+        cal_id = int(parts[1])
+        contest_id = int(parts[2])
+    except (ValueError, IndexError):
         await callback.answer("Неверные данные", show_alert=True)
         return
-    state = PROCESSING.get(tg_id)
+    key = (tg_id, contest_id)
+    state = PROCESSING.get(key)
     task = state.get("current") if state else None
     future = state.get("future") if state else None
     if (
         state is None
         or _is_stale(state)
+        or _prompt_stale(state)
         or task is None
         or task["calendar"].id != cal_id
         or future is None
@@ -280,8 +286,8 @@ async def _warn_decision(callback: CallbackQuery, add_duplicate: bool) -> None:
     await callback.answer()
 
 
-async def _show_summary(tg_id: int, message: Message) -> None:
-    state = PROCESSING.get(tg_id)
+async def _show_summary(tg_id: int, contest_id: int, message: Message) -> None:
+    state = PROCESSING.get((tg_id, contest_id))
     if state is None:
         return
     added = [t for t in state["tasks"] if t["status"] == "added" and not t["dup"]]

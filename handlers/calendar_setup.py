@@ -75,7 +75,10 @@ async def yandex_email_input(message: Message, state: FSMContext) -> None:
 
 @router.message(CalendarSetup.caldav_server)
 async def caldav_server_input(message: Message, state: FSMContext) -> None:
-    server_url = message.text.strip()
+    server_url = _normalize_server_url(message.text)
+    if not server_url:
+        await message.answer("Укажите адрес CalDAV-сервера, например https://caldav.example.com/")
+        return
     await state.update_data(server_url=server_url)
     if _is_insecure_http(server_url):
         await state.set_state(CalendarSetup.http_confirm)
@@ -88,6 +91,13 @@ async def caldav_server_input(message: Message, state: FSMContext) -> None:
         return
     await state.set_state(CalendarSetup.caldav_login)
     await message.answer("Отправьте логин:")
+
+
+def _normalize_server_url(raw: str) -> str:
+    url = raw.strip()
+    if url and "://" not in url:
+        url = "https://" + url
+    return url
 
 
 def _is_insecure_http(url: str) -> bool:

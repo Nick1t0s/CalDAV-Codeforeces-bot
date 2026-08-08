@@ -36,9 +36,11 @@ async def cal_toggle(callback: CallbackQuery) -> None:
     user_id = await ensure_user_id(callback.from_user.id)
     async with async_session() as session:
         cal = await session.get(Calendar, cal_id)
-        if cal is not None and cal.user_id == user_id:
-            cal.is_active = not cal.is_active
-            await session.commit()
+        if cal is None or cal.user_id != user_id:
+            await callback.answer("Календарь не найден", show_alert=True)
+            return
+        cal.is_active = not cal.is_active
+        await session.commit()
     await render_calendar_menu(callback.from_user.id, callback.message)
     await callback.answer()
 
@@ -52,9 +54,11 @@ async def cal_delete(callback: CallbackQuery) -> None:
     user_id = await ensure_user_id(callback.from_user.id)
     async with async_session() as session:
         cal = await session.get(Calendar, cal_id)
-        if cal is not None and cal.user_id == user_id:
-            await session.delete(cal)
-            await session.commit()
+        if cal is None or cal.user_id != user_id:
+            await callback.answer("Календарь не найден", show_alert=True)
+            return
+        await session.delete(cal)
+        await session.commit()
     await render_calendar_menu(callback.from_user.id, callback.message)
     await callback.answer()
 
