@@ -5,6 +5,7 @@ from sqlalchemy import func, select
 
 from db.models import Calendar, async_session, ensure_user_id
 from handlers.calendar_common import render_calendar_menu
+from handlers.common import safe_edit_text
 from keyboards.inline import calendar_type_kb
 
 router = Router()
@@ -66,5 +67,5 @@ async def cal_add(callback: CallbackQuery) -> None:
     if count >= MAX_CALENDARS:
         await callback.answer(f"Можно подключить не более {MAX_CALENDARS} календарей", show_alert=True)
         return
-    await callback.message.edit_text("Какой календарь подключить?", reply_markup=calendar_type_kb())
+    await safe_edit_text(callback.message, "Какой календарь подключить?", reply_markup=calendar_type_kb())
     await callback.answer()

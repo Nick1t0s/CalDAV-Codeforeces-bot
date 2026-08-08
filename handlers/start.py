@@ -3,7 +3,7 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from db.models import get_or_create_user
+from db.models import get_or_create_user, unblock_user
 from handlers.common import safe_edit_text
 from keyboards.inline import main_menu_kb, start_new_user_kb
 
@@ -15,6 +15,7 @@ MENU_TEXT = "👋 Привет! Я бот Codeforces Contests.\n\nНастрой
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     _, created = await get_or_create_user(message.from_user.id)
+    await unblock_user(message.from_user.id)
     if created:
         await message.answer(
             "👋 Привет! Я помогу тебе не пропускать контесты на Codeforces.\n\n"

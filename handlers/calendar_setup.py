@@ -1,4 +1,5 @@
 import asyncio
+from urllib.parse import urlparse
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -12,9 +13,15 @@ from db.models import Calendar, async_session, ensure_user_id
 from handlers.calendar_common import render_calendar_menu
 from handlers.calendar_settings import MAX_CALENDARS
 from handlers.common import safe_edit_text
-from keyboards.inline import calendar_type_kb, guide_kb, main_menu_kb, retry_cancel_kb
+from keyboards.inline import (
+    calendar_type_kb,
+    guide_kb,
+    http_confirm_kb,
+    main_menu_kb,
+    retry_cancel_kb,
+)
 from services.caldav_service import friendly_error, list_calendars
-from services.crypto import encrypt
+from services.crypto import encrypt, key_hash
 from services.guides import get_guide
 
 router = Router()
@@ -25,6 +32,7 @@ class CalendarSetup(StatesGroup):
     yandex_email = State()
     yandex_password = State()
     caldav_server = State()
+    http_confirm = State()
     caldav_login = State()
     caldav_password = State()
 
@@ -67,9 +75,38 @@ async def yandex_email_input(message: Message, state: FSMContext) -> None:
 
 @router.message(CalendarSetup.caldav_server)
 async def caldav_server_input(message: Message, state: FSMContext) -> None:
-    await state.update_data(server_url=message.text.strip())
+    server_url = message.text.strip()
+    await state.update_data(server_url=server_url)
+    if _is_insecure_http(server_url):
+        await state.set_state(CalendarSetup.http_confirm)
+        await message.answer(
+            "⚠️ Адрес указан по протоколу HTTP: пароль будет передаваться на сервер "
+            "без шифрования и может быть перехвачен.\n\n"
+            "Настоятельно рекомендуется использовать HTTPS. Продолжить?",
+            reply_markup=http_confirm_kb(),
+        )
+        return
     await state.set_state(CalendarSetup.caldav_login)
     await message.answer("Отправьте логин:")
+
+
+def _is_insecure_http(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme == "http" and parsed.hostname not in ("localhost", "127.0.0.1")
+
+
+@router.callback_query(F.data == "cal_http_confirm")
+async def cal_http_confirm(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(CalendarSetup.caldav_login)
+    await safe_edit_text(callback.message, "Отправьте логин:")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "cal_http_edit")
+async def cal_http_edit(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(CalendarSetup.caldav_server)
+    await safe_edit_text(callback.message, "Отправьте адрес CalDAV-сервера (например, https://caldav.example.com/):")
+    await callback.answer()
 
 
 @router.message(CalendarSetup.caldav_login)
@@ -157,6 +194,7 @@ async def _validate_and_save(message: Message, state: FSMContext, server_url: st
                 server_url=server_url,
                 username=username,
                 password=encrypt(password),
+                key_hash=key_hash(),
             )
         )
         await session.commit()

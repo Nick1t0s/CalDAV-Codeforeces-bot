@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from math import ceil
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramForbiddenError
 from sqlalchemy import select
 
 from config import PARSE_INTERVAL_SECONDS, REMIND_INTERVAL_SECONDS
@@ -14,17 +15,24 @@ from db.models import (
     Registration,
     User,
     async_session,
+    mark_user_blocked,
 )
 from keyboards.inline import contest_announce_kb, notify_settings_shortcut_kb
 from services.cf_parser import parse_contests
-from services.text import format_contest_info
+from services.text import format_contest_info, format_dt_msk
 
 logger = logging.getLogger(__name__)
 
 
 async def broadcast_new_contests(bot: Bot, contests: list[Contest]) -> None:
     async with async_session() as session:
-        tg_ids = list((await session.scalars(select(User.tg_id))).all())
+        tg_ids = list(
+            (
+                await session.scalars(
+                    select(User.tg_id).where(User.is_blocked.is_(False))
+                )
+            ).all()
+        )
     for contest in contests:
         text = "\n".join(
             ["🔥 Новый контест на Codeforces!", "", format_contest_info(contest)]
@@ -32,6 +40,8 @@ async def broadcast_new_contests(bot: Bot, contests: list[Contest]) -> None:
         for tg_id in tg_ids:
             try:
                 await bot.send_message(tg_id, text, reply_markup=contest_announce_kb(contest.id))
+            except TelegramForbiddenError:
+                await mark_user_blocked(tg_id)
             except Exception:
                 logger.exception("Failed to send contest announcement to user %s", tg_id)
 
@@ -59,7 +69,13 @@ async def send_reminders(bot: Bot) -> None:
                 )
             ).all()
         }
-        tg_by_db_id = dict((await session.execute(select(User.id, User.tg_id))).all())
+        tg_by_db_id = dict(
+            (
+                await session.execute(
+                    select(User.id, User.tg_id).where(User.is_blocked.is_(False))
+                )
+            ).all()
+        )
 
     for reg, contest in rows:
         if contest.start_time <= now:
@@ -70,16 +86,21 @@ async def send_reminders(bot: Bot) -> None:
             remaining = contest.start_time - now
             if remaining.total_seconds() > offset * 60:
                 continue
+            # ceil намеренно: округляем вверх, чтобы не напомнить раньше заявленного времени
             minutes = max(1, ceil(remaining.total_seconds() / 60))
             tg_id = tg_by_db_id.get(reg.user_id)
             if tg_id is None:
                 continue
             text = (
-                f"⏰ Контест «{contest.name}» начнётся через {minutes} мин\n\n"
+                f"⏰ Контест «{contest.name}» начнётся через {minutes} мин\n"
+                f"🕒 Начало: {format_dt_msk(contest.start_time)} (МСК)\n\n"
                 f"🔗 https://codeforces.com/contest/{contest.cf_id}"
             )
             try:
                 await bot.send_message(tg_id, text, reply_markup=notify_settings_shortcut_kb())
+            except TelegramForbiddenError:
+                await mark_user_blocked(tg_id)
+                continue
             except Exception:
                 logger.exception("Failed to send reminder to user %s", tg_id)
                 continue

@@ -1,6 +1,15 @@
+import hashlib
+
 from cryptography.fernet import Fernet, InvalidToken
 
 from config import SECRET_KEY
+
+KEY_CHANGED_MSG = "Ключ шифрования изменился — переподключите календарь"
+
+
+class KeyChangedError(Exception):
+    pass
+
 
 _FERNET: Fernet | None = None
 
@@ -14,6 +23,10 @@ def _get_fernet() -> Fernet:
     return _FERNET
 
 
+def key_hash() -> str:
+    return hashlib.sha256(SECRET_KEY.encode()).hexdigest()[:12]
+
+
 def encrypt(plaintext: str) -> str:
     return _get_fernet().encrypt(plaintext.encode()).decode()
 
@@ -23,5 +36,5 @@ def decrypt(ciphertext: str) -> str:
         return ""
     try:
         return _get_fernet().decrypt(ciphertext.encode()).decode()
-    except (InvalidToken, ValueError):
-        return ciphertext
+    except (InvalidToken, ValueError) as exc:
+        raise KeyChangedError(KEY_CHANGED_MSG) from exc

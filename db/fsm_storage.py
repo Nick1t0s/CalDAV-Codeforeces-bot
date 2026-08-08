@@ -39,7 +39,7 @@ class SQLiteStorage(BaseStorage):
 
     @staticmethod
     def _make_key(key: StorageKey) -> str:
-        return f"{key.chat_id}:{key.user_id}"
+        return f"{key.bot_id}:{key.chat_id}:{key.user_id}"
 
     async def set_state(self, key: StorageKey, state: StateType = None) -> None:
         conn = await self._connection()

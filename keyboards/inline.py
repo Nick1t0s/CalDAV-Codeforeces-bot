@@ -88,6 +88,16 @@ def retry_cancel_kb() -> InlineKeyboardMarkup:
     )
 
 
+def http_confirm_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Всё равно продолжить", callback_data="cal_http_confirm")],
+            [InlineKeyboardButton(text="✏️ Изменить адрес", callback_data="cal_http_edit")],
+            [InlineKeyboardButton(text="Отмена", callback_data="cal_cancel")],
+        ]
+    )
+
+
 def contest_announce_kb(contest_db_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="🔥 Буду участвовать", callback_data=f"reg:{contest_db_id}")]]

@@ -33,6 +33,7 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     tg_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    is_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class Calendar(Base):
@@ -44,6 +45,7 @@ class Calendar(Base):
     server_url: Mapped[str] = mapped_column(String(255))
     username: Mapped[str] = mapped_column(String(255))
     password: Mapped[str] = mapped_column(String(255))
+    key_hash: Mapped[str | None] = mapped_column(String(32), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
@@ -96,9 +98,19 @@ engine = create_async_engine(DB_URL)
 async_session = async_sessionmaker(engine, expire_on_commit=False)
 
 
+def _run_migrations(sync_conn) -> None:
+    users_cols = {row[1] for row in sync_conn.exec_driver_sql("PRAGMA table_info(users)")}
+    if "is_blocked" not in users_cols:
+        sync_conn.exec_driver_sql("ALTER TABLE users ADD COLUMN is_blocked BOOLEAN NOT NULL DEFAULT 0")
+    calendars_cols = {row[1] for row in sync_conn.exec_driver_sql("PRAGMA table_info(calendars)")}
+    if "key_hash" not in calendars_cols:
+        sync_conn.exec_driver_sql("ALTER TABLE calendars ADD COLUMN key_hash VARCHAR(32)")
+
+
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_run_migrations)
 
 
 async def get_db_user_id(tg_id: int) -> int | None:
@@ -130,3 +142,19 @@ async def get_or_create_user(tg_id: int) -> tuple[User, bool]:
 async def ensure_user_id(tg_id: int) -> int:
     user, _ = await get_or_create_user(tg_id)
     return user.id
+
+
+async def mark_user_blocked(tg_id: int) -> None:
+    async with async_session() as session:
+        user = await session.scalar(select(User).where(User.tg_id == tg_id))
+        if user is not None and not user.is_blocked:
+            user.is_blocked = True
+            await session.commit()
+
+
+async def unblock_user(tg_id: int) -> None:
+    async with async_session() as session:
+        user = await session.scalar(select(User).where(User.tg_id == tg_id))
+        if user is not None and user.is_blocked:
+            user.is_blocked = False
+            await session.commit()
