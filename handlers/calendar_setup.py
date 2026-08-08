@@ -11,8 +11,10 @@ from config import YANDEX_CALDAV_URL
 from db.models import Calendar, async_session, ensure_user_id
 from handlers.calendar_common import render_calendar_menu
 from handlers.calendar_settings import MAX_CALENDARS
+from handlers.common import safe_edit_text
 from keyboards.inline import calendar_type_kb, guide_kb, main_menu_kb, retry_cancel_kb
 from services.caldav_service import friendly_error, list_calendars
+from services.crypto import encrypt
 from services.guides import get_guide
 
 router = Router()
@@ -30,7 +32,7 @@ class CalendarSetup(StatesGroup):
 @router.callback_query(F.data == "cal_setup_start")
 async def cal_setup_start(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(CalendarSetup.type)
-    await callback.message.edit_text("Какой календарь подключить?", reply_markup=calendar_type_kb())
+    await safe_edit_text(callback.message, "Какой календарь подключить?", reply_markup=calendar_type_kb())
     await callback.answer()
 
 
@@ -38,7 +40,7 @@ async def cal_setup_start(callback: CallbackQuery, state: FSMContext) -> None:
 async def cal_setup_yandex(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(cal_type="yandex")
     await state.set_state(CalendarSetup.yandex_email)
-    await callback.message.edit_text(
+    await safe_edit_text(callback.message, 
         "📅 Подключение Яндекс Календаря\n\nОтправьте email Яндекс-аккаунта:",
         reply_markup=guide_kb(),
     )
@@ -49,7 +51,7 @@ async def cal_setup_yandex(callback: CallbackQuery, state: FSMContext) -> None:
 async def cal_setup_caldav(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(cal_type="caldav")
     await state.set_state(CalendarSetup.caldav_server)
-    await callback.message.edit_text(
+    await safe_edit_text(callback.message, 
         "📅 Подключение CalDAV-сервера\n\nОтправьте адрес CalDAV-сервера "
         "(например, https://caldav.example.com/):"
     )
@@ -94,10 +96,10 @@ async def cal_retry(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     if data.get("cal_type") == "yandex":
         await state.set_state(CalendarSetup.yandex_email)
-        await callback.message.edit_text("Отправьте email Яндекс-аккаунта:", reply_markup=guide_kb())
+        await safe_edit_text(callback.message, "Отправьте email Яндекс-аккаунта:", reply_markup=guide_kb())
     else:
         await state.set_state(CalendarSetup.caldav_server)
-        await callback.message.edit_text("Отправьте адрес CalDAV-сервера:")
+        await safe_edit_text(callback.message, "Отправьте адрес CalDAV-сервера:")
     await callback.answer()
 
 
@@ -131,7 +133,7 @@ async def _validate_and_save(message: Message, state: FSMContext, server_url: st
     try:
         await asyncio.to_thread(list_calendars, server_url, username, password)
     except Exception as exc:
-        await checking.edit_text(
+        await safe_edit_text(checking, 
             f"❌ Не удалось подключиться: {friendly_error(exc)}",
             reply_markup=retry_cancel_kb(),
         )
@@ -142,7 +144,7 @@ async def _validate_and_save(message: Message, state: FSMContext, server_url: st
         count = await session.scalar(select(func.count(Calendar.id)).where(Calendar.user_id == user_id))
         if count >= MAX_CALENDARS:
             await state.clear()
-            await checking.edit_text(
+            await safe_edit_text(checking, 
                 f"❌ Достигнут лимит календарей ({MAX_CALENDARS}).",
                 reply_markup=main_menu_kb(),
             )
@@ -154,7 +156,7 @@ async def _validate_and_save(message: Message, state: FSMContext, server_url: st
                 type=data.get("cal_type", "caldav"),
                 server_url=server_url,
                 username=username,
-                password=password,
+                password=encrypt(password),
             )
         )
         await session.commit()

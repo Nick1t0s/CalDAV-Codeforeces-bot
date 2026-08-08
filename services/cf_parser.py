@@ -22,28 +22,42 @@ async def parse_contests() -> list[Contest]:
     async with async_session() as session:
         existing = {c.cf_id: c for c in (await session.scalars(select(Contest))).all()}
         for item in payload.get("result", []):
-            cf_id = int(item["id"])
-            phase = item.get("phase", "")
+            if not isinstance(item, dict):
+                continue
+            cf_id = item.get("id")
+            try:
+                cf_id = int(cf_id)
+            except (TypeError, ValueError):
+                continue
+            phase = item.get("phase", "") or ""
             start_ts = item.get("startTimeSeconds")
-            start = datetime.fromtimestamp(start_ts, tz=timezone.utc).replace(tzinfo=None) if start_ts else None
+            start = (
+                datetime.fromtimestamp(int(start_ts), tz=timezone.utc).replace(tzinfo=None)
+                if start_ts
+                else None
+            )
+            try:
+                duration = int(item.get("durationSeconds", 0) or 0)
+            except (TypeError, ValueError):
+                duration = 0
             contest = existing.get(cf_id)
             if contest is None:
                 contest = Contest(
                     cf_id=cf_id,
-                    name=item.get("name", ""),
-                    type=item.get("type", ""),
+                    name=str(item.get("name", "") or ""),
+                    type=str(item.get("type", "") or ""),
                     phase=phase,
                     start_time=start,
-                    duration_seconds=int(item.get("durationSeconds", 0)),
+                    duration_seconds=duration,
                 )
                 session.add(contest)
                 existing[cf_id] = contest
             else:
-                contest.name = item.get("name", "")
-                contest.type = item.get("type", "")
+                contest.name = str(item.get("name", "") or "")
+                contest.type = str(item.get("type", "") or "")
                 contest.phase = phase
                 contest.start_time = start
-                contest.duration_seconds = int(item.get("durationSeconds", 0))
+                contest.duration_seconds = duration
             if phase == "BEFORE" and not contest.announced:
                 contest.announced = True
                 new_before.append(contest)

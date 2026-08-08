@@ -10,6 +10,7 @@ from sqlalchemy import (
     UniqueConstraint,
     select,
 )
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncAttrs, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -112,7 +113,14 @@ async def get_or_create_user(tg_id: int) -> tuple[User, bool]:
             return user, False
         user = User(tg_id=tg_id)
         session.add(user)
-        await session.flush()
+        try:
+            await session.flush()
+        except IntegrityError:
+            await session.rollback()
+            user = await session.scalar(select(User).where(User.tg_id == tg_id))
+            if user is not None:
+                return user, False
+            raise
         for offset in DEFAULT_NOTIFY_OFFSETS:
             session.add(NotifySetting(user_id=user.id, offset_minutes=offset))
         await session.commit()

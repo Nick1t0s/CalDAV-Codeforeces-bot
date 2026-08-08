@@ -12,6 +12,13 @@ router = Router()
 MAX_CALENDARS = 10
 
 
+def _parse_cal_id(data: str) -> int | None:
+    try:
+        return int(data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        return None
+
+
 @router.callback_query(F.data == "cal_settings")
 async def cal_settings(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
@@ -21,7 +28,10 @@ async def cal_settings(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("cal_toggle:"))
 async def cal_toggle(callback: CallbackQuery) -> None:
-    cal_id = int(callback.data.split(":", 1)[1])
+    cal_id = _parse_cal_id(callback.data)
+    if cal_id is None:
+        await callback.answer("Неверные данные", show_alert=True)
+        return
     user_id = await ensure_user_id(callback.from_user.id)
     async with async_session() as session:
         cal = await session.get(Calendar, cal_id)
@@ -34,7 +44,10 @@ async def cal_toggle(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("cal_delete:"))
 async def cal_delete(callback: CallbackQuery) -> None:
-    cal_id = int(callback.data.split(":", 1)[1])
+    cal_id = _parse_cal_id(callback.data)
+    if cal_id is None:
+        await callback.answer("Неверные данные", show_alert=True)
+        return
     user_id = await ensure_user_id(callback.from_user.id)
     async with async_session() as session:
         cal = await session.get(Calendar, cal_id)

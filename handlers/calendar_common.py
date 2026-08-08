@@ -2,6 +2,7 @@ from aiogram.types import Message
 from sqlalchemy import select
 
 from db.models import Calendar, async_session, ensure_user_id
+from handlers.common import safe_edit_text
 from keyboards.inline import calendar_settings_kb
 
 
@@ -27,4 +28,4 @@ async def render_calendar_menu(tg_id: int, message: Message, prefix: str = "") -
     user_id = await ensure_user_id(tg_id)
     calendars = await get_calendars(user_id)
     text = f"{prefix}\n\n{calendars_text(calendars)}" if prefix else calendars_text(calendars)
-    await message.edit_text(text, reply_markup=calendar_settings_kb(calendars))
+    await safe_edit_text(message, text, reply_markup=calendar_settings_kb(calendars))

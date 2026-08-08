@@ -1,10 +1,15 @@
+import logging
+
 import caldav
 from caldav.lib.error import (
     AuthorizationError,
     ConsistencyError,
-    DAVError,
     NotFoundError,
 )
+
+from services.crypto import decrypt
+
+logger = logging.getLogger(__name__)
 
 
 class CalendarNotFoundError(Exception):
@@ -15,10 +20,17 @@ def _client(server_url: str, username: str, password: str) -> caldav.DAVClient:
     return caldav.DAVClient(
         url=server_url,
         username=username,
-        password=password,
+        password=decrypt(password),
         timeout=30,
         require_tls=False,
     )
+
+
+def _target_calendar(principal: caldav.Principal) -> caldav.Calendar:
+    calendars = principal.calendars()
+    if not calendars:
+        raise CalendarNotFoundError("На сервере нет календарей")
+    return calendars[0]
 
 
 def list_calendars(server_url: str, username: str, password: str) -> list[str]:
@@ -28,15 +40,14 @@ def list_calendars(server_url: str, username: str, password: str) -> list[str]:
 
 def find_by_uid(server_url: str, username: str, password: str, uid: str) -> bool:
     client = _client(server_url, username, password)
-    for cal in client.principal().calendars():
-        try:
-            cal.get_event_by_uid(uid)
-            return True
-        except ConsistencyError:
-            return True
-        except NotFoundError:
-            continue
-    return False
+    cal = _target_calendar(client.principal())
+    try:
+        cal.get_event_by_uid(uid)
+        return True
+    except ConsistencyError:
+        return True
+    except NotFoundError:
+        return False
 
 
 def add_event(
@@ -50,24 +61,14 @@ def add_event(
     end,
 ) -> None:
     client = _client(server_url, username, password)
-    principal = client.principal()
-    calendars = principal.calendars()
-    if not calendars:
-        raise CalendarNotFoundError("На сервере нет календарей")
-    calendars[0].add_event(dtstart=start, dtend=end, uid=uid, summary=summary)
+    cal = _target_calendar(client.principal())
+    cal.add_event(dtstart=start, dtend=end, uid=uid, summary=summary)
 
 
 def friendly_error(exc: Exception) -> str:
+    logger.warning("CalDAV error: %s", exc, exc_info=True)
     if isinstance(exc, AuthorizationError):
-        return "Неверный логин или пароль"
-    if isinstance(exc, NotFoundError):
-        return "Сервер не поддерживает CalDAV или адрес указан неверно"
-    if isinstance(exc, (ConnectionRefusedError, TimeoutError)):
-        return "Не удалось подключиться к серверу"
+        return "Неверные данные доступа"
     if isinstance(exc, CalendarNotFoundError):
         return str(exc)
-    if isinstance(exc, DAVError):
-        return "Ошибка CalDAV-протокола"
-    if isinstance(exc, OSError):
-        return "Ошибка сети при подключении"
-    return f"{type(exc).__name__}: {exc}"
+    return "Сервер не отвечает или не поддерживает CalDAV"

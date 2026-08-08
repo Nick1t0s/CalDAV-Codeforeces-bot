@@ -4,6 +4,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from db.models import get_or_create_user
+from handlers.common import safe_edit_text
 from keyboards.inline import main_menu_kb, start_new_user_kb
 
 router = Router()
@@ -30,12 +31,12 @@ async def cmd_start(message: Message) -> None:
 
 @router.callback_query(F.data == "no_thanks")
 async def no_thanks(callback: CallbackQuery) -> None:
-    await callback.message.edit_text(MENU_TEXT, reply_markup=main_menu_kb())
+    await safe_edit_text(callback.message, MENU_TEXT, reply_markup=main_menu_kb())
     await callback.answer()
 
 
 @router.callback_query(F.data == "main_menu")
 async def back_to_menu(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    await callback.message.edit_text(MENU_TEXT, reply_markup=main_menu_kb())
+    await safe_edit_text(callback.message, MENU_TEXT, reply_markup=main_menu_kb())
     await callback.answer()

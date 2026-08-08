@@ -3,11 +3,14 @@ from aiogram.types import CallbackQuery
 from sqlalchemy import func, select
 
 from db.models import NotifySetting, async_session, ensure_user_id
-from keyboards.inline import notify_settings_kb
+from handlers.common import safe_edit_text
+from keyboards.inline import NOTIFY_OPTIONS, notify_settings_kb
 
 router = Router()
 
 MAX_NOTIFICATIONS = 10
+
+ALLOWED_OFFSETS = {offset for offset, _ in NOTIFY_OPTIONS}
 
 
 def _text() -> str:
@@ -25,13 +28,20 @@ async def notify_settings_menu(callback: CallbackQuery) -> None:
         active = set(
             (await session.scalars(select(NotifySetting.offset_minutes).where(NotifySetting.user_id == user_id))).all()
         )
-    await callback.message.edit_text(_text(), reply_markup=notify_settings_kb(active))
+    await safe_edit_text(callback.message, _text(), reply_markup=notify_settings_kb(active))
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("notif_toggle:"))
 async def notif_toggle(callback: CallbackQuery) -> None:
-    offset = int(callback.data.split(":", 1)[1])
+    try:
+        offset = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer("Неверные данные", show_alert=True)
+        return
+    if offset not in ALLOWED_OFFSETS:
+        await callback.answer("Неверные данные", show_alert=True)
+        return
     user_id = await ensure_user_id(callback.from_user.id)
     async with async_session() as session:
         existing = await session.scalar(
