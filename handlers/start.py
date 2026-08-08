@@ -13,7 +13,8 @@ MENU_TEXT = "👋 Привет! Я бот Codeforces Contests.\n\nНастрой
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message) -> None:
+async def cmd_start(message: Message, state: FSMContext) -> None:
+    await state.clear()
     _, created = await get_or_create_user(message.from_user.id)
     await unblock_user(message.from_user.id)
     if created:

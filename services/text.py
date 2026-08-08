@@ -17,6 +17,35 @@ def format_duration(seconds: int) -> str:
     return f"{minutes} мин"
 
 
+def _plural(number: int, one: str, few: str, many: str) -> str:
+    mod10 = number % 10
+    mod100 = number % 100
+    if mod10 == 1 and mod100 != 11:
+        return one
+    if 2 <= mod10 <= 4 and not 12 <= mod100 <= 14:
+        return few
+    return many
+
+
+def format_minutes(minutes: int) -> str:
+    """Человекочитаемое «через N недель/дней/часов/минут» с русской плюрализацией."""
+    if minutes < 1:
+        minutes = 1
+    units: list[tuple[int, str, str, str]] = [
+        (7 * 24 * 60, "неделя", "недели", "недель"),
+        (24 * 60, "день", "дня", "дней"),
+        (60, "час", "часа", "часов"),
+        (1, "минута", "минуты", "минут"),
+    ]
+    parts: list[str] = []
+    remaining = minutes
+    for size, one, few, many in units:
+        value, remaining = divmod(remaining, size)
+        if value:
+            parts.append(f"{value} {_plural(value, one, few, many)}")
+    return " ".join(parts[:2]) if parts else "0 минут"
+
+
 def format_dt_msk(dt: datetime) -> str:
     return to_utc_aware(dt).astimezone(MSK).strftime("%d.%m.%Y %H:%M")
 

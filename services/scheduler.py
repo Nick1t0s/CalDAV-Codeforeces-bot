@@ -1,11 +1,12 @@
 import asyncio
 import logging
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from math import ceil
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from config import PARSE_INTERVAL_SECONDS, REMIND_INTERVAL_SECONDS
 from db.models import (
@@ -19,9 +20,13 @@ from db.models import (
 )
 from keyboards.inline import contest_announce_kb, notify_settings_shortcut_kb
 from services.cf_parser import parse_contests
-from services.text import format_contest_info, format_dt_msk
+from services.text import format_contest_info, format_dt_msk, format_minutes
 
 logger = logging.getLogger(__name__)
+
+LOG_RETENTION_DAYS = 30
+_CLEANUP_INTERVAL_SECONDS = 86400
+_last_log_cleanup = 0.0
 
 
 async def broadcast_new_contests(bot: Bot, contests: list[Contest]) -> None:
@@ -92,7 +97,7 @@ async def send_reminders(bot: Bot) -> None:
             if tg_id is None:
                 continue
             text = (
-                f"⏰ Контест «{contest.name}» начнётся через {minutes} мин\n"
+                f"⏰ Контест «{contest.name}» начнётся через {format_minutes(minutes)}\n"
                 f"🕒 Начало: {format_dt_msk(contest.start_time)} (МСК)\n\n"
                 f"🔗 https://codeforces.com/contest/{contest.cf_id}"
             )
@@ -111,6 +116,17 @@ async def send_reminders(bot: Bot) -> None:
                 await session.commit()
 
 
+async def cleanup_notification_log() -> None:
+    """Удаляет логи напоминаний по контестам, стартовавшим более LOG_RETENTION_DAYS назад."""
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=LOG_RETENTION_DAYS)
+    async with async_session() as session:
+        stale_ids = select(Contest.id).where(
+            Contest.start_time.is_not(None), Contest.start_time < cutoff
+        )
+        await session.execute(delete(NotificationLog).where(NotificationLog.contest_id.in_(stale_ids)))
+        await session.commit()
+
+
 async def _parse_loop(bot: Bot) -> None:
     while True:
         try:
@@ -123,11 +139,19 @@ async def _parse_loop(bot: Bot) -> None:
 
 
 async def _remind_loop(bot: Bot) -> None:
+    global _last_log_cleanup
     while True:
         try:
             await send_reminders(bot)
         except Exception:
             logger.exception("Reminder loop failed")
+        now_ts = time.monotonic()
+        if now_ts - _last_log_cleanup >= _CLEANUP_INTERVAL_SECONDS:
+            try:
+                await cleanup_notification_log()
+                _last_log_cleanup = now_ts
+            except Exception:
+                logger.exception("Notification log cleanup failed")
         await asyncio.sleep(REMIND_INTERVAL_SECONDS)
 
 

@@ -3,6 +3,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from db.models import Calendar
 
 NOTIFY_OPTIONS = [
+    (5, "5 мин"),
     (10, "10 мин"),
     (15, "15 мин"),
     (30, "30 мин"),

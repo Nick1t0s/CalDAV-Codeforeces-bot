@@ -7,7 +7,7 @@ from aiogram.exceptions import DataNotDictLikeError
 from aiogram.fsm.state import State
 from aiogram.fsm.storage.base import BaseStorage, StateType, StorageKey
 
-from config import DB_URL
+from config import FSM_DB_PATH
 
 _CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS fsm_states (
@@ -18,16 +18,9 @@ CREATE TABLE IF NOT EXISTS fsm_states (
 """
 
 
-def _db_path() -> str:
-    prefix = "sqlite+aiosqlite:///"
-    if DB_URL.startswith(prefix):
-        return DB_URL[len(prefix):] or "bot.db"
-    raise RuntimeError("SQLiteStorage supports only sqlite+aiosqlite DSN")
-
-
 class SQLiteStorage(BaseStorage):
     def __init__(self, db_path: str | None = None) -> None:
-        self._db_path = db_path or _db_path()
+        self._db_path = db_path or FSM_DB_PATH
         self._conn: aiosqlite.Connection | None = None
 
     async def _connection(self) -> aiosqlite.Connection:

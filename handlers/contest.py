@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 
 from aiogram import F, Router
@@ -13,10 +14,16 @@ from services.caldav_service import add_event, find_by_uid, friendly_error
 from services.crypto import KEY_CHANGED_MSG, key_hash
 from services.text import format_contest_info, to_utc_aware
 
+logger = logging.getLogger(__name__)
+
 router = Router()
 
 PROCESSING_TIMEOUT_SECONDS = 300
 PROCESSING: dict[int, dict] = {}
+# Блокировка на пользователя: защищает от гонок, когда два нажатия «Буду участвовать»
+# обрабатываются параллельно и перезаписывают общий PROCESSING[tg_id] (двойное
+# добавление событий). Хранится навсегда — один объект (~200 байт) на уникального
+# пользователя, очистка при ожидающем хендлере небезопасна (см. _process_next).
 _LOCKS: dict[int, asyncio.Lock] = {}
 
 
@@ -132,6 +139,10 @@ async def _process_next(tg_id: int, message: Message) -> None:
     state = PROCESSING.get(tg_id)
     if state is None or _is_stale(state):
         PROCESSING.pop(tg_id, None)
+        await safe_edit_text(
+            message,
+            "⏱ Операция прервана (таймаут обработки). Нажмите «Буду участвовать» ещё раз.",
+        )
         return
     contest = state["contest"]
     uid = f"cf-contest-{contest.cf_id}"
@@ -177,13 +188,27 @@ async def _process_next(tg_id: int, message: Message) -> None:
                         task["status"] = "error"
                         task["detail"] = "Контест без времени старта"
                     else:
+                        dup_uid = f"cf-contest-{contest.cf_id}-dup"
+                        try:
+                            dup_exists = await asyncio.to_thread(
+                                find_by_uid, cal.server_url, cal.username, cal.password, dup_uid
+                            )
+                        except Exception as exc:
+                            task["status"] = "error"
+                            task["detail"] = friendly_error(exc)
+                            continue
+                        if dup_exists:
+                            task["status"] = "added"
+                            task["dup"] = True
+                            task["detail"] = "уже было"
+                            continue
                         try:
                             await asyncio.to_thread(
                                 add_event,
                                 cal.server_url,
                                 cal.username,
                                 cal.password,
-                                uid=f"cf-contest-{contest.cf_id}-dup",
+                                uid=dup_uid,
                                 summary=contest.name,
                                 start=times[0],
                                 end=times[1],
@@ -274,7 +299,7 @@ async def _show_summary(tg_id: int, message: Message) -> None:
     if warnings:
         lines = [
             f"• {calendar_display(t['calendar'])} — "
-            f"{'добавлено' if t['status'] == 'added' else 'не добавлено'}"
+            f"{t.get('detail') or ('добавлено' if t['status'] == 'added' else 'не добавлено')}"
             for t in warnings
         ]
         parts.append("⚠️ Наслоение событий:\n" + "\n".join(lines))
@@ -284,4 +309,11 @@ async def _show_summary(tg_id: int, message: Message) -> None:
             + "\n".join(f"• {calendar_display(t['calendar'])}: {t['detail']}" for t in errors)
         )
     parts.append("🔗 https://codeforces.com/contests")
-    await safe_edit_text(message, "\n\n".join(parts))
+    try:
+        await safe_edit_text(message, "\n\n".join(parts))
+    except Exception:
+        logger.exception("Failed to show summary to user %s", tg_id)
+        try:
+            await message.answer("✅ Участие подтверждено! Подробности недоступны — нажмите «Буду участвовать» повторно.")
+        except Exception:
+            logger.exception("Failed to send fallback summary to user %s", tg_id)
