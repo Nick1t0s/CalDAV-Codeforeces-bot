@@ -47,6 +47,8 @@ async def _send_message(bot: Bot, tg_id: int, text: str, reply_markup=None) -> b
 
 
 async def broadcast_new_contests(bot: Bot, contests: list[Contest]) -> None:
+    if not contests:
+        return
     async with async_session() as session:
         tg_ids = list(
             (
@@ -61,6 +63,14 @@ async def broadcast_new_contests(bot: Bot, contests: list[Contest]) -> None:
         )
         for tg_id in tg_ids:
             await _send_message(bot, tg_id, text, reply_markup=contest_announce_kb(contest.id))
+    # Помечаем анонсированными только после успешной рассылки, иначе при сбое
+    # контест останется неанонсированным и будет разослан повторно на следующем тике.
+    async with async_session() as session:
+        for contest in contests:
+            row = await session.get(Contest, contest.id)
+            if row is not None:
+                row.announced = True
+        await session.commit()
 
 
 async def send_reminders(bot: Bot) -> None:
@@ -97,32 +107,40 @@ async def send_reminders(bot: Bot) -> None:
     for reg, contest in rows:
         if contest.start_time <= now:
             continue
-        for offset in active_offsets.get(reg.user_id, set()):
-            if (reg.user_id, reg.contest_id, offset) in logged:
-                continue
-            remaining = contest.start_time - now
-            if remaining.total_seconds() > offset * 60:
-                continue
-            # ceil намеренно: округляем вверх, чтобы не напомнить раньше заявленного времени
-            minutes = max(1, ceil(remaining.total_seconds() / 60))
-            tg_id = tg_by_db_id.get(reg.user_id)
-            if tg_id is None:
-                continue
-            text = (
-                f"⏰ Контест «{contest.name}» начнётся через {format_minutes(minutes)}\n"
-                f"🕒 Начало: {format_dt_msk(contest.start_time)} (МСК)\n\n"
-                f"🔗 https://codeforces.com/contest/{contest.cf_id}"
-            )
-            delivered = await _send_message(
-                bot, tg_id, text, reply_markup=notify_settings_shortcut_kb()
-            )
-            if not delivered:
-                continue
-            async with async_session() as session:
+        remaining = contest.start_time - now
+        # Сработавшими считаем все офсеты, чьё окно уже открылось (remaining <= offset).
+        # Шлём ОДНО сообщение на (пользователь, контест) за раз — за ближайший
+        # (наименьший) из таких офсетов, а в лог пишем все сработавшие, чтобы
+        # не напоминать повторно на каждом тике.
+        due_offsets = [
+            offset
+            for offset in active_offsets.get(reg.user_id, set())
+            if (reg.user_id, reg.contest_id, offset) not in logged
+            and remaining.total_seconds() <= offset * 60
+        ]
+        if not due_offsets:
+            continue
+        # ceil намеренно: округляем вверх, чтобы не напомнить раньше заявленного времени
+        minutes = max(1, ceil(remaining.total_seconds() / 60))
+        tg_id = tg_by_db_id.get(reg.user_id)
+        if tg_id is None:
+            continue
+        text = (
+            f"⏰ Контест «{contest.name}» начнётся через {format_minutes(minutes)}\n"
+            f"🕒 Начало: {format_dt_msk(contest.start_time)} (МСК)\n\n"
+            f"🔗 https://codeforces.com/contest/{contest.cf_id}"
+        )
+        delivered = await _send_message(
+            bot, tg_id, text, reply_markup=notify_settings_shortcut_kb()
+        )
+        if not delivered:
+            continue
+        async with async_session() as session:
+            for offset in due_offsets:
                 session.add(
                     NotificationLog(user_id=reg.user_id, contest_id=reg.contest_id, offset_minutes=offset)
                 )
-                await session.commit()
+            await session.commit()
 
 
 async def cleanup_notification_log() -> None:

@@ -117,6 +117,9 @@ async def _register_for_contest(callback: CallbackQuery, tg_id: int, contest_id:
         return
 
     tasks = [{"calendar": cal, "status": "pending", "detail": "", "dup": False} for cal in calendars]
+    stale = PROCESSING.get((tg_id, contest_id))
+    if stale is not None and _is_stale(stale):
+        PROCESSING.pop((tg_id, contest_id), None)
     PROCESSING[(tg_id, contest_id)] = {
         "contest": contest,
         "tasks": tasks,
@@ -147,6 +150,8 @@ async def _process_next(tg_id: int, contest_id: int, message: Message) -> None:
     uid = f"cf-contest-{contest.cf_id}"
     try:
         while state["pending"]:
+            if _is_stale(state):
+                break
             task = state["pending"].pop(0)
             cal = task["calendar"]
             if cal.key_hash is not None and cal.key_hash != key_hash():
@@ -244,6 +249,12 @@ async def _process_next(tg_id: int, contest_id: int, message: Message) -> None:
             except Exception as exc:
                 task["status"] = "error"
                 task["detail"] = friendly_error(exc)
+        if _is_stale(state):
+            await safe_edit_text(
+                message,
+                "⏱ Операция прервана (таймаут обработки). Нажмите «Буду участвовать» ещё раз.",
+            )
+            return
         await _show_summary(tg_id, contest_id, message)
     finally:
         PROCESSING.pop((tg_id, contest_id), None)

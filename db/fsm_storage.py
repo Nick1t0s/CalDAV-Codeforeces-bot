@@ -1,3 +1,4 @@
+import asyncio
 import json
 from collections.abc import Mapping
 from typing import Any
@@ -22,6 +23,13 @@ class SQLiteStorage(BaseStorage):
     def __init__(self, db_path: str | None = None) -> None:
         self._db_path = db_path or FSM_DB_PATH
         self._conn: aiosqlite.Connection | None = None
+        # aiogram обрабатывает апдейты конкурентно (create_task), поэтому
+        # read-modify-write в update_data должен выполняться атомарно по ключу,
+        # иначе параллельные колбэки теряют обновления друг друга.
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    def _lock(self, storage_key: str) -> asyncio.Lock:
+        return self._locks.setdefault(storage_key, asyncio.Lock())
 
     async def _connection(self) -> aiosqlite.Connection:
         if self._conn is None:
@@ -74,6 +82,14 @@ class SQLiteStorage(BaseStorage):
         except (TypeError, ValueError):
             data = {}
         return data if isinstance(data, dict) else {}
+
+    async def update_data(self, key: StorageKey, data: Mapping[str, Any]) -> dict[str, Any]:
+        storage_key = self._make_key(key)
+        async with self._lock(storage_key):
+            current_data = await self.get_data(key)
+            current_data.update(data)
+            await self.set_data(key, current_data)
+            return current_data.copy()
 
     async def close(self) -> None:
         if self._conn is not None:

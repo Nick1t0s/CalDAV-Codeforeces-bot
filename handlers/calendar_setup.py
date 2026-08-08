@@ -22,7 +22,7 @@ from keyboards.inline import (
     retry_cancel_kb,
 )
 from services.caldav_service import friendly_error, list_calendars
-from services.crypto import encrypt, key_hash
+from services.crypto import KeyChangedError, decrypt, encrypt, key_hash
 from services.guides import get_guide
 
 router = Router()
@@ -37,6 +37,11 @@ class CalendarSetup(StatesGroup):
     caldav_login = State()
     caldav_password = State()
     pick_calendar = State()
+
+
+def _message_text(message: Message) -> str | None:
+    text = message.text
+    return text.strip() if text else None
 
 
 @router.callback_query(F.data == "cal_setup_start")
@@ -70,14 +75,18 @@ async def cal_setup_caldav(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(CalendarSetup.yandex_email)
 async def yandex_email_input(message: Message, state: FSMContext) -> None:
-    await state.update_data(email=message.text.strip())
+    email = _message_text(message)
+    if email is None:
+        await message.answer("Пожалуйста, отправьте email текстовым сообщением.")
+        return
+    await state.update_data(email=email)
     await state.set_state(CalendarSetup.yandex_password)
     await message.answer("Отправьте пароль приложения для CalDAV (нужен пароль приложения, а не основной пароль):", reply_markup=guide_kb())
 
 
 @router.message(CalendarSetup.caldav_server)
 async def caldav_server_input(message: Message, state: FSMContext) -> None:
-    server_url = _normalize_server_url(message.text)
+    server_url = _normalize_server_url(_message_text(message))
     if not server_url:
         await message.answer("Укажите адрес CalDAV-сервера, например https://caldav.example.com/")
         return
@@ -95,8 +104,8 @@ async def caldav_server_input(message: Message, state: FSMContext) -> None:
     await message.answer("Отправьте логин:")
 
 
-def _normalize_server_url(raw: str) -> str:
-    url = raw.strip()
+def _normalize_server_url(raw: str | None) -> str:
+    url = (raw or "").strip()
     if url and "://" not in url:
         url = "https://" + url
     return url
@@ -109,6 +118,9 @@ def _is_insecure_http(url: str) -> bool:
 
 @router.callback_query(F.data == "cal_http_confirm")
 async def cal_http_confirm(callback: CallbackQuery, state: FSMContext) -> None:
+    if await state.get_state() != CalendarSetup.http_confirm:
+        await callback.answer("Операция устарела, попробуйте ещё раз", show_alert=True)
+        return
     await state.set_state(CalendarSetup.caldav_login)
     await safe_edit_text(callback.message, "Отправьте логин:")
     await callback.answer()
@@ -116,6 +128,9 @@ async def cal_http_confirm(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "cal_http_edit")
 async def cal_http_edit(callback: CallbackQuery, state: FSMContext) -> None:
+    if await state.get_state() != CalendarSetup.http_confirm:
+        await callback.answer("Операция устарела, попробуйте ещё раз", show_alert=True)
+        return
     await state.set_state(CalendarSetup.caldav_server)
     await safe_edit_text(callback.message, "Отправьте адрес CalDAV-сервера (например, https://caldav.example.com/):")
     await callback.answer()
@@ -123,21 +138,33 @@ async def cal_http_edit(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(CalendarSetup.caldav_login)
 async def caldav_login_input(message: Message, state: FSMContext) -> None:
-    await state.update_data(username=message.text.strip())
+    username = _message_text(message)
+    if username is None:
+        await message.answer("Пожалуйста, отправьте логин текстовым сообщением.")
+        return
+    await state.update_data(username=username)
     await state.set_state(CalendarSetup.caldav_password)
     await message.answer("Отправьте пароль:")
 
 
 @router.message(CalendarSetup.yandex_password)
 async def yandex_password_input(message: Message, state: FSMContext) -> None:
+    password = _message_text(message)
+    if password is None:
+        await message.answer("Пожалуйста, отправьте пароль текстовым сообщением.")
+        return
     data = await state.get_data()
-    await _validate_and_save(message, state, YANDEX_CALDAV_URL, data.get("email", ""), message.text.strip())
+    await _validate_and_save(message, state, YANDEX_CALDAV_URL, data.get("email", ""), password)
 
 
 @router.message(CalendarSetup.caldav_password)
 async def caldav_password_input(message: Message, state: FSMContext) -> None:
+    password = _message_text(message)
+    if password is None:
+        await message.answer("Пожалуйста, отправьте пароль текстовым сообщением.")
+        return
     data = await state.get_data()
-    await _validate_and_save(message, state, data.get("server_url", ""), data.get("username", ""), message.text.strip())
+    await _validate_and_save(message, state, data.get("server_url", ""), data.get("username", ""), password)
 
 
 @router.callback_query(F.data == "cal_retry")
@@ -199,7 +226,7 @@ async def _validate_and_save(message: Message, state: FSMContext, server_url: st
     await state.update_data(
         pick_server_url=server_url,
         pick_username=username,
-        pick_password=password,
+        pick_password=encrypt(password),
         calendars=calendars,
     )
     await state.set_state(CalendarSetup.pick_calendar)
@@ -225,13 +252,24 @@ async def cal_pick(callback: CallbackQuery, state: FSMContext) -> None:
     if not (0 <= idx < len(calendars)):
         await callback.answer("Неверные данные", show_alert=True)
         return
+    try:
+        password = decrypt(data["pick_password"])
+    except KeyChangedError:
+        await state.clear()
+        await safe_edit_text(
+            callback.message,
+            "❌ Ключ шифрования изменился — начните подключение заново.",
+            reply_markup=main_menu_kb(),
+        )
+        await callback.answer()
+        return
     await _save_calendar(
         callback.from_user.id,
         callback.message,
         state,
         data["pick_server_url"],
         data["pick_username"],
-        data["pick_password"],
+        password,
         calendars[idx],
     )
     await callback.answer()

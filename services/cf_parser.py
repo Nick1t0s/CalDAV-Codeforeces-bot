@@ -20,6 +20,8 @@ async def parse_contests() -> list[Contest]:
                 payload = await response.json()
             except (aiohttp.ContentTypeError, ValueError) as exc:
                 raise RuntimeError(f"Codeforces API returned non-JSON response: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("Codeforces API returned unexpected JSON payload")
     if payload.get("status") != "OK":
         raise RuntimeError(f"Codeforces API error: {payload.get('comment')}")
 
@@ -71,7 +73,6 @@ async def parse_contests() -> list[Contest]:
                 and contest.start_time is not None
                 and contest.start_time > now
             ):
-                contest.announced = True
                 new_before.append(contest)
         await session.commit()
     return new_before
