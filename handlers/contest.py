@@ -155,7 +155,7 @@ async def _process_next(tg_id: int, contest_id: int, message: Message) -> None:
                 continue
             try:
                 exists = await asyncio.to_thread(
-                    find_by_uid, cal.server_url, cal.username, cal.password, uid
+                    find_by_uid, cal.server_url, cal.username, cal.password, uid, cal.calendar_url
                 )
             except Exception as exc:
                 task["status"] = "error"
@@ -192,7 +192,7 @@ async def _process_next(tg_id: int, contest_id: int, message: Message) -> None:
                         dup_uid = f"cf-contest-{contest.cf_id}-dup"
                         try:
                             dup_exists = await asyncio.to_thread(
-                                find_by_uid, cal.server_url, cal.username, cal.password, dup_uid
+                                find_by_uid, cal.server_url, cal.username, cal.password, dup_uid, cal.calendar_url
                             )
                         except Exception as exc:
                             task["status"] = "error"
@@ -213,6 +213,7 @@ async def _process_next(tg_id: int, contest_id: int, message: Message) -> None:
                                 summary=contest.name,
                                 start=times[0],
                                 end=times[1],
+                                calendar_url=cal.calendar_url,
                             )
                             task["status"] = "added"
                             task["dup"] = True
@@ -237,6 +238,7 @@ async def _process_next(tg_id: int, contest_id: int, message: Message) -> None:
                     summary=contest.name,
                     start=times[0],
                     end=times[1],
+                    calendar_url=cal.calendar_url,
                 )
                 task["status"] = "added"
             except Exception as exc:

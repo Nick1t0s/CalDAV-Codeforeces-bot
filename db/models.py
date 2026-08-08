@@ -51,6 +51,8 @@ class Calendar(Base):
     password: Mapped[str] = mapped_column(Text)
     key_hash: Mapped[str | None] = mapped_column(String(32), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    calendar_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 class Contest(Base):
@@ -110,10 +112,16 @@ def _run_migrations(sync_conn) -> None:
         calendars_cols = {row[1] for row in sync_conn.exec_driver_sql("PRAGMA table_info(calendars)")}
         if "key_hash" not in calendars_cols:
             sync_conn.exec_driver_sql("ALTER TABLE calendars ADD COLUMN key_hash VARCHAR(32)")
+        if "calendar_url" not in calendars_cols:
+            sync_conn.exec_driver_sql("ALTER TABLE calendars ADD COLUMN calendar_url VARCHAR(255)")
+        if "name" not in calendars_cols:
+            sync_conn.exec_driver_sql("ALTER TABLE calendars ADD COLUMN name VARCHAR(255)")
         return
     for table, column, ddl in (
         ("users", "is_blocked", "BOOLEAN NOT NULL DEFAULT false"),
         ("calendars", "key_hash", "VARCHAR(32)"),
+        ("calendars", "calendar_url", "VARCHAR(255)"),
+        ("calendars", "name", "VARCHAR(255)"),
     ):
         try:
             sync_conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ddl}")

@@ -99,6 +99,20 @@ def http_confirm_kb() -> InlineKeyboardMarkup:
     )
 
 
+def calendar_pick_kb(calendars: list[tuple[str, str]]) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text=label, callback_data=f"cal_pick:{i}")]
+        for i, (_, label) in enumerate(calendars)
+    ]
+    buttons.append(
+        [
+            InlineKeyboardButton(text="Попробовать снова", callback_data="cal_retry"),
+            InlineKeyboardButton(text="Отмена", callback_data="cal_cancel"),
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 def contest_announce_kb(contest_db_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="🔥 Буду участвовать", callback_data=f"reg:{contest_db_id}")]]

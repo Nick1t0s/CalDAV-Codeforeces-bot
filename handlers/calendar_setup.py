@@ -14,6 +14,7 @@ from handlers.calendar_common import render_calendar_menu
 from handlers.calendar_settings import MAX_CALENDARS
 from handlers.common import safe_edit_text
 from keyboards.inline import (
+    calendar_pick_kb,
     calendar_type_kb,
     guide_kb,
     http_confirm_kb,
@@ -35,6 +36,7 @@ class CalendarSetup(StatesGroup):
     http_confirm = State()
     caldav_login = State()
     caldav_password = State()
+    pick_calendar = State()
 
 
 @router.callback_query(F.data == "cal_setup_start")
@@ -178,7 +180,7 @@ async def cancel_command(message: Message, state: FSMContext) -> None:
 async def _validate_and_save(message: Message, state: FSMContext, server_url: str, username: str, password: str) -> None:
     checking = await message.answer("⏳ Проверяю подключение…")
     try:
-        await asyncio.to_thread(list_calendars, server_url, username, password)
+        calendars = await asyncio.to_thread(list_calendars, server_url, username, password)
     except Exception as exc:
         await safe_edit_text(checking, 
             f"❌ Не удалось подключиться: {friendly_error(exc)}",
@@ -186,12 +188,70 @@ async def _validate_and_save(message: Message, state: FSMContext, server_url: st
         )
         return
 
-    user_id = await ensure_user_id(message.from_user.id)
+    if not calendars:
+        await safe_edit_text(checking, "❌ На сервере нет календарей.", reply_markup=retry_cancel_kb())
+        return
+
+    if len(calendars) == 1:
+        await _save_calendar(message.from_user.id, checking, state, server_url, username, password, calendars[0])
+        return
+
+    await state.update_data(
+        pick_server_url=server_url,
+        pick_username=username,
+        pick_password=password,
+        calendars=calendars,
+    )
+    await state.set_state(CalendarSetup.pick_calendar)
+    await safe_edit_text(
+        checking,
+        "📅 На аккаунте несколько календарей. Куда добавлять события контестов?",
+        reply_markup=calendar_pick_kb(calendars),
+    )
+
+
+@router.callback_query(F.data.startswith("cal_pick:"))
+async def cal_pick(callback: CallbackQuery, state: FSMContext) -> None:
+    if await state.get_state() != CalendarSetup.pick_calendar:
+        await callback.answer("Операция устарела, попробуйте ещё раз", show_alert=True)
+        return
+    try:
+        idx = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer("Неверные данные", show_alert=True)
+        return
+    data = await state.get_data()
+    calendars = data.get("calendars") or []
+    if not (0 <= idx < len(calendars)):
+        await callback.answer("Неверные данные", show_alert=True)
+        return
+    await _save_calendar(
+        callback.from_user.id,
+        callback.message,
+        state,
+        data["pick_server_url"],
+        data["pick_username"],
+        data["pick_password"],
+        calendars[idx],
+    )
+    await callback.answer()
+
+
+async def _save_calendar(
+    tg_id: int,
+    message: Message,
+    state: FSMContext,
+    server_url: str,
+    username: str,
+    password: str,
+    calendar: tuple[str, str] | None,
+) -> None:
+    user_id = await ensure_user_id(tg_id)
     async with async_session() as session:
         count = await session.scalar(select(func.count(Calendar.id)).where(Calendar.user_id == user_id))
         if count >= MAX_CALENDARS:
             await state.clear()
-            await safe_edit_text(checking, 
+            await safe_edit_text(message, 
                 f"❌ Достигнут лимит календарей ({MAX_CALENDARS}).",
                 reply_markup=main_menu_kb(),
             )
@@ -205,8 +265,10 @@ async def _validate_and_save(message: Message, state: FSMContext, server_url: st
                 username=username,
                 password=encrypt(password),
                 key_hash=key_hash(),
+                calendar_url=calendar[0] if calendar else None,
+                name=calendar[1] if calendar else None,
             )
         )
         await session.commit()
     await state.clear()
-    await render_calendar_menu(message.from_user.id, checking, "✅ Календарь подключён!")
+    await render_calendar_menu(tg_id, message, "✅ Календарь подключён!")

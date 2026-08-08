@@ -26,21 +26,31 @@ def _client(server_url: str, username: str, password: str, *, encrypted: bool = 
     )
 
 
-def _target_calendar(principal: caldav.Principal) -> caldav.Calendar:
+def _target_calendar(principal: caldav.Principal, calendar_url: str | None = None) -> caldav.Calendar:
+    if calendar_url:
+        return principal.client.calendar(url=calendar_url)
     calendars = principal.calendars()
     if not calendars:
         raise CalendarNotFoundError("На сервере нет календарей")
     return calendars[0]
 
 
-def list_calendars(server_url: str, username: str, password: str) -> list[str]:
+def _calendar_label(cal: caldav.Calendar) -> str:
+    return cal.get_display_name() or cal.id or str(cal.url)
+
+
+def list_calendars(server_url: str, username: str, password: str) -> list[tuple[str, str]]:
     client = _client(server_url, username, password, encrypted=False)
-    return [cal.name or cal.id for cal in client.principal().calendars()]
+    return [
+        (str(cal.url), _calendar_label(cal)) for cal in client.principal().calendars()
+    ]
 
 
-def find_by_uid(server_url: str, username: str, password: str, uid: str) -> bool:
+def find_by_uid(
+    server_url: str, username: str, password: str, uid: str, calendar_url: str | None = None
+) -> bool:
     client = _client(server_url, username, password)
-    cal = _target_calendar(client.principal())
+    cal = _target_calendar(client.principal(), calendar_url)
     try:
         cal.get_event_by_uid(uid)
         return True
@@ -59,9 +69,10 @@ def add_event(
     summary: str,
     start,
     end,
+    calendar_url: str | None = None,
 ) -> None:
     client = _client(server_url, username, password)
-    cal = _target_calendar(client.principal())
+    cal = _target_calendar(client.principal(), calendar_url)
     cal.add_event(dtstart=start, dtend=end, uid=uid, summary=summary)
 
 

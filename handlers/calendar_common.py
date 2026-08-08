@@ -20,7 +20,8 @@ def calendars_text(calendars: list[Calendar]) -> str:
     else:
         for i, cal in enumerate(calendars, 1):
             status = "✅ активен" if cal.is_active else "❌ выключен"
-            lines.append(f"{i}) {cal.username or cal.server_url} • {status}")
+            label = cal.name or cal.username or cal.server_url
+            lines.append(f"{i}) {label} • {status}")
     return "\n".join(lines)
 
 
