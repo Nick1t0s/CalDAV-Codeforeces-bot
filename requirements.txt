@@ -1,8 +1,8 @@
-aiogram>=3.30.0
-python-dotenv>=1.2.2
-SQLAlchemy>=2.0.51
-aiosqlite>=0.22.1
-aiohttp>=3.14.3
-caldav>=3.2.1
-cryptography>=50.0.0
-python-dateutil>=2.9.0.post0
+aiogram==3.30.0
+python-dotenv==1.2.2
+SQLAlchemy==2.0.51
+aiosqlite==0.22.1
+aiohttp==3.14.3
+caldav==3.2.1
+cryptography==50.0.0
+python-dateutil==2.9.0.post0
