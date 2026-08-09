@@ -8,7 +8,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 from sqlalchemy import delete, select
 
-from config import PARSE_INTERVAL_SECONDS, REMIND_INTERVAL_SECONDS
+from config import ADMIN_IDS, PARSE_INTERVAL_SECONDS, REMIND_INTERVAL_SECONDS
 from db.models import (
     Contest,
     NotificationLog,
@@ -46,37 +46,41 @@ async def _send_message(bot: Bot, tg_id: int, text: str, reply_markup=None) -> b
     return False
 
 
-async def broadcast_new_contests(bot: Bot, contests: list[Contest]) -> None:
-    if not contests:
-        return
+async def announce_contest(bot: Bot, contest: Contest) -> int:
+    """Рассылает анонс контеста всем активным пользователям, помечает announced."""
     async with async_session() as session:
         tg_ids = list(
             (
                 await session.scalars(
-                    select(User.tg_id).where(User.is_blocked.is_(False))
+                    select(User.tg_id).where(User.is_blocked.is_(False), User.tg_id.not_in(ADMIN_IDS))
                 )
             ).all()
         )
-    delivered_ids: list[int] = []
-    for contest in contests:
-        text = "\n".join(
-            ["🔥 Новый контест на Codeforces!", "", format_contest_info(contest)]
-        )
-        delivered = False
-        for tg_id in tg_ids:
-            if await _send_message(bot, tg_id, text, reply_markup=contest_announce_kb(contest.id)):
-                delivered = True
-        if delivered:
-            delivered_ids.append(contest.id)
-    # Помечаем анонсированными только после успешной рассылки (хотя бы одному
-    # пользователю), иначе при сбое контест останется неанонсированным и будет
-    # разослан повторно на следующем тике.
-    async with async_session() as session:
-        for contest_id in delivered_ids:
-            row = await session.get(Contest, contest_id)
+    text = "\n".join(
+        ["🔥 Новый контест на Codeforces!", "", format_contest_info(contest)]
+    )
+    delivered = 0
+    for tg_id in tg_ids:
+        if await _send_message(bot, tg_id, text, reply_markup=contest_announce_kb(contest.id)):
+            delivered += 1
+    if delivered:
+        contest.announced = True
+        async with async_session() as session:
+            row = await session.get(Contest, contest.id)
             if row is not None:
                 row.announced = True
-        await session.commit()
+            await session.commit()
+    return delivered
+
+
+async def broadcast_new_contests(bot: Bot, contests: list[Contest]) -> None:
+    if not contests:
+        return
+    for contest in contests:
+        # Помечаем анонсированными только после успешной рассылки (хотя бы одному
+        # пользователю), иначе при сбое контест останется неанонсированным и будет
+        # разослан повторно на следующем тике.
+        await announce_contest(bot, contest)
 
 
 async def send_reminders(bot: Bot) -> None:
@@ -105,7 +109,9 @@ async def send_reminders(bot: Bot) -> None:
         tg_by_db_id = dict(
             (
                 await session.execute(
-                    select(User.id, User.tg_id).where(User.is_blocked.is_(False))
+                    select(User.id, User.tg_id).where(
+                        User.is_blocked.is_(False), User.tg_id.not_in(ADMIN_IDS)
+                    )
                 )
             ).all()
         )

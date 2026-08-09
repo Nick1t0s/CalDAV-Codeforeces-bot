@@ -3,6 +3,7 @@ from aiogram.types import CallbackQuery
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
+from config import is_admin
 from db.models import NotifySetting, async_session, ensure_user_id
 from handlers.common import safe_edit_text
 from keyboards.inline import NOTIFY_OPTIONS, notify_settings_kb
@@ -24,6 +25,9 @@ def _text() -> str:
 
 @router.callback_query(F.data == "notify_settings")
 async def notify_settings_menu(callback: CallbackQuery) -> None:
+    if is_admin(callback.from_user.id):
+        await callback.answer("⛔️ Нет доступа.", show_alert=True)
+        return
     user_id = await ensure_user_id(callback.from_user.id)
     async with async_session() as session:
         active = set(

@@ -3,6 +3,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 from sqlalchemy import func, select
 
+from config import is_admin
 from db.models import Calendar, async_session, ensure_user_id
 from handlers.calendar_common import render_calendar_menu
 from handlers.common import safe_edit_text
@@ -22,6 +23,9 @@ def _parse_cal_id(data: str) -> int | None:
 
 @router.callback_query(F.data == "cal_settings")
 async def cal_settings(callback: CallbackQuery, state: FSMContext) -> None:
+    if is_admin(callback.from_user.id):
+        await callback.answer("⛔️ Нет доступа.", show_alert=True)
+        return
     await state.clear()
     await render_calendar_menu(callback.from_user.id, callback.message)
     await callback.answer()

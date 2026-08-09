@@ -10,6 +10,27 @@ DB_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///bot.db")
 SECRET_KEY = os.getenv("SECRET_KEY", "")
 
 
+def _env_int_list(name: str) -> set[int]:
+    raw = os.getenv(name, "")
+    if not raw:
+        return set()
+    result: set[int] = set()
+    for part in raw.split(","):
+        part = part.strip()
+        try:
+            result.add(int(part))
+        except ValueError:
+            logging.getLogger(__name__).warning("Invalid integer in %s: %r, skipped", name, part)
+    return result
+
+
+ADMIN_IDS = _env_int_list("ADMIN_IDS")
+
+
+def is_admin(tg_id: int) -> bool:
+    return tg_id in ADMIN_IDS
+
+
 def _env_int(name: str, default: int) -> int:
     raw = os.getenv(name, "")
     if not raw:

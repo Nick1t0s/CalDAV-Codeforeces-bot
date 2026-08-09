@@ -123,3 +123,17 @@ def to_calendar_settings_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="📅 Настроить календари", callback_data="cal_settings")]]
     )
+
+
+def admin_menu_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📢 Эмулировать новый контест", callback_data="admin_create_contest")],
+        ]
+    )
+
+
+def admin_cancel_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="admin_cancel")]]
+    )

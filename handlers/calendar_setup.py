@@ -8,7 +8,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import func, select
 
-from config import YANDEX_CALDAV_URL
+from config import YANDEX_CALDAV_URL, is_admin
 from db.models import Calendar, async_session, ensure_user_id
 from handlers.calendar_common import render_calendar_menu
 from handlers.calendar_settings import MAX_CALENDARS
@@ -46,6 +46,9 @@ def _message_text(message: Message) -> str | None:
 
 @router.callback_query(F.data == "cal_setup_start")
 async def cal_setup_start(callback: CallbackQuery, state: FSMContext) -> None:
+    if is_admin(callback.from_user.id):
+        await callback.answer("⛔️ Нет доступа.", show_alert=True)
+        return
     await state.set_state(CalendarSetup.type)
     await safe_edit_text(callback.message, "Какой календарь подключить?", reply_markup=calendar_type_kb())
     await callback.answer()

@@ -7,7 +7,7 @@ from aiogram.types import ErrorEvent
 
 from config import BOT_TOKEN, SECRET_KEY
 from db.models import engine, init_db
-from handlers import calendar_setup, calendar_settings, contest, notify_settings, start
+from handlers import admin, calendar_setup, calendar_settings, contest, notify_settings, start
 from handlers.contest import cancel_background_tasks
 from services.scheduler import start_scheduler
 
@@ -27,6 +27,7 @@ async def main() -> None:
 
     bot = Bot(BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
+    dp.include_router(admin.router)
     dp.include_router(start.router)
     dp.include_router(calendar_setup.router)
     dp.include_router(calendar_settings.router)
