@@ -47,7 +47,14 @@ async def _send_message(bot: Bot, tg_id: int, text: str, reply_markup=None) -> b
 
 
 async def announce_contest(bot: Bot, contest: Contest) -> int:
-    """Рассылает анонс контеста всем активным пользователям, помечает announced."""
+    """Рассылает анонс контеста всем активным пользователям, помечает announced.
+
+    Доставка не гарантируется: если сообщение кому-то не удалось отправить
+    (блокировка бота, недоступность Telegram и т.п.), повторных попыток для этого
+    контеста не делаем — контест всё равно помечается анонсированным, чтобы не
+    рассылать его заново на каждом тике. Пользователи, заблокировавшие бота к
+    моменту анонса, анонс не получат — это осознанное упрощение.
+    """
     async with async_session() as session:
         tg_ids = list(
             (
@@ -63,13 +70,12 @@ async def announce_contest(bot: Bot, contest: Contest) -> int:
     for tg_id in tg_ids:
         if await _send_message(bot, tg_id, text, reply_markup=contest_announce_kb(contest.id)):
             delivered += 1
-    if delivered:
-        contest.announced = True
-        async with async_session() as session:
-            row = await session.get(Contest, contest.id)
-            if row is not None:
-                row.announced = True
-            await session.commit()
+    contest.announced = True
+    async with async_session() as session:
+        row = await session.get(Contest, contest.id)
+        if row is not None:
+            row.announced = True
+        await session.commit()
     return delivered
 
 
@@ -130,6 +136,10 @@ async def send_reminders(bot: Bot) -> None:
             if (reg.user_id, reg.contest_id, offset) not in logged
             and remaining.total_seconds() <= offset * 60
         ]
+        # Если окно оффсета уже открылось к моменту первого тика (поздняя
+        # регистрация или простой бота), оффсет считается сработавшим и
+        # отдельного напоминания «за N минут» для него не будет — это осознанное
+        # поведение: шлём одно сообщение за ближайший сработавший оффсет.
         if not due_offsets:
             continue
         # ceil намеренно: округляем вверх, чтобы не напомнить раньше заявленного времени

@@ -6,6 +6,8 @@ from caldav.lib.error import (
     AuthorizationError,
     ConsistencyError,
     NotFoundError,
+    RateLimitError,
+    ResponseError,
 )
 from dateutil.rrule import rrulestr
 
@@ -180,6 +182,10 @@ def add_event(
     end,
     calendar_url: str | None = None,
 ) -> None:
+    # Известное ограничение: событие создаётся один раз и в дальнейшем не
+    # синхронизируется. Если Codeforces перенесёт контест (случается редко, на
+    # 30–60 минут из-за технических проблем), время в календаре обновится только
+    # при повторном добавлении; база контестов при этом обновляется парсером.
     client = _client(server_url, username, password)
     cal = _target_calendar(client.principal(), calendar_url)
     cal.add_event(dtstart=start, dtend=end, uid=uid, summary=summary)
@@ -193,4 +199,30 @@ def friendly_error(exc: Exception) -> str:
         return "Неверные данные доступа"
     if isinstance(exc, CalendarNotFoundError):
         return str(exc)
+    if isinstance(exc, NotFoundError):
+        return "Календарь не найден по указанному адресу"
+    if isinstance(exc, RateLimitError):
+        return "Сервер временно перегружен. Попробуйте позже"
+    if isinstance(exc, ResponseError):
+        return "Сервер вернул ошибку. Проверьте адрес и права доступа"
+    # Пользователю не показываем текст исключения и URL (в DAVError лежит адрес) —
+    # только обобщённую причину.
+    try:
+        from niquests.exceptions import (
+            ConnectionError as NiquestsConnectionError,
+            SSLError as NiquestsSSLError,
+            Timeout as NiquestsTimeout,
+        )
+    except ImportError:
+        NiquestsTimeout = NiquestsConnectionError = NiquestsSSLError = None
+    if NiquestsTimeout is not None and isinstance(exc, NiquestsTimeout):
+        return "Сервер не отвечает (таймаут). Попробуйте позже"
+    if NiquestsSSLError is not None and isinstance(exc, NiquestsSSLError):
+        return "Ошибка защищённого соединения (SSL). Убедитесь, что сервер поддерживает HTTPS"
+    if NiquestsConnectionError is not None and isinstance(exc, NiquestsConnectionError):
+        return "Не удалось подключиться к серверу. Проверьте адрес"
+    if isinstance(exc, TimeoutError):
+        return "Сервер не отвечает (таймаут). Попробуйте позже"
+    if isinstance(exc, ValueError):
+        return "Неверный адрес сервера"
     return "Сервер не отвечает или не поддерживает CalDAV"

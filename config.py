@@ -43,5 +43,15 @@ def _env_int(name: str, default: int) -> int:
 
 
 PARSE_INTERVAL_SECONDS = _env_int("PARSE_INTERVAL_SECONDS", 600)
-REMIND_INTERVAL_SECONDS = _env_int("REMIND_INTERVAL_SECONDS", 60)
+REMIND_INTERVAL_SECONDS = _env_int("REMIND_INTERVAL_SECONDS", 10)
 YANDEX_CALDAV_URL = "https://caldav.yandex.ru"
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
+
+ALLOW_LOCAL_CALDAV = _env_bool("ALLOW_LOCAL_CALDAV", False)

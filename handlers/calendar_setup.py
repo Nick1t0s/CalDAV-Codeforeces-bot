@@ -8,7 +8,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import func, select
 
-from config import YANDEX_CALDAV_URL, is_admin
+from config import ALLOW_LOCAL_CALDAV, YANDEX_CALDAV_URL, is_admin
 from db.models import Calendar, async_session, ensure_user_id
 from handlers.calendar_common import render_calendar_menu
 from handlers.calendar_settings import MAX_CALENDARS
@@ -27,6 +27,15 @@ from services.guides import get_guide
 
 router = Router()
 
+# Защита от гонки при двойной отправке пароля (см. _validate_and_save): aiogram
+# обрабатывает апдейты конкурентно, поэтому валидация оборачивается в lock на
+# пользователя, а повторный ввод во время проверки не должен запускать новую.
+_SETUP_LOCKS: dict[int, asyncio.Lock] = {}
+
+
+def _setup_lock(tg_id: int) -> asyncio.Lock:
+    return _SETUP_LOCKS.setdefault(tg_id, asyncio.Lock())
+
 
 class CalendarSetup(StatesGroup):
     type = State()
@@ -36,6 +45,7 @@ class CalendarSetup(StatesGroup):
     http_confirm = State()
     caldav_login = State()
     caldav_password = State()
+    checking = State()
     pick_calendar = State()
 
 
@@ -93,6 +103,12 @@ async def caldav_server_input(message: Message, state: FSMContext) -> None:
     if not server_url:
         await message.answer("Укажите адрес CalDAV-сервера, например https://caldav.example.com/")
         return
+    if _is_local_hostname(server_url) and not ALLOW_LOCAL_CALDAV:
+        await message.answer(
+            "❌ Локальные адреса (localhost, 127.0.0.1 и т.п.) запрещены настройками бота. "
+            "Укажите публичный CalDAV-сервер."
+        )
+        return
     await state.update_data(server_url=server_url)
     if _is_insecure_http(server_url):
         await state.set_state(CalendarSetup.http_confirm)
@@ -117,6 +133,25 @@ def _normalize_server_url(raw: str | None) -> str:
 def _is_insecure_http(url: str) -> bool:
     parsed = urlparse(url)
     return parsed.scheme == "http" and parsed.hostname not in ("localhost", "127.0.0.1")
+
+
+def _is_local_hostname(url: str) -> bool:
+    """Локальные/приватные адреса: localhost, loopback, RFC1918, link-local, .local."""
+    host = (urlparse(url).hostname or "").lower().rstrip(".")
+    if host in ("localhost", "127.0.0.1", "::1", "[::1]"):
+        return True
+    if host.endswith(".local"):
+        return True
+    if host.startswith("10.") or host.startswith("192.168.") or host.startswith("169.254."):
+        return True
+    if host.startswith("172."):
+        try:
+            second = int(host.split(".")[1])
+            if 16 <= second <= 31:
+                return True
+        except (ValueError, IndexError):
+            pass
+    return False
 
 
 @router.callback_query(F.data == "cal_http_confirm")
@@ -207,37 +242,56 @@ async def cancel_command(message: Message, state: FSMContext) -> None:
     await message.answer("Отменено.")
 
 
+@router.message(CalendarSetup.checking)
+async def checking_input(message: Message, state: FSMContext) -> None:
+    await message.answer("⏳ Проверка подключения уже выполняется, подождите…")
+
+
 async def _validate_and_save(message: Message, state: FSMContext, server_url: str, username: str, password: str) -> None:
-    checking = await message.answer("⏳ Проверяю подключение…")
-    try:
-        calendars = await asyncio.to_thread(list_calendars, server_url, username, password)
-    except Exception as exc:
-        await safe_edit_text(checking, 
-            f"❌ Не удалось подключиться: {friendly_error(exc)}",
-            reply_markup=retry_cancel_kb(),
+    # Per-user lock: два сообщения с паролем, отправленные подряд, не должны
+    # запускать две проверки параллельно и создавать дубликаты календарей.
+    async with _setup_lock(message.from_user.id):
+        data0 = await state.get_data()
+        expected = (
+            CalendarSetup.yandex_password if data0.get("cal_type") == "yandex" else CalendarSetup.caldav_password
         )
-        return
+        if await state.get_state() != expected:
+            await message.answer("Подключение уже обрабатывается или завершено.")
+            return
+        await state.set_state(CalendarSetup.checking)
+        checking = await message.answer("⏳ Проверяю подключение…")
+        try:
+            calendars = await asyncio.to_thread(list_calendars, server_url, username, password)
+        except Exception as exc:
+            await state.set_state(expected)
+            await safe_edit_text(
+                checking,
+                f"❌ Не удалось подключиться: {friendly_error(exc)}",
+                reply_markup=retry_cancel_kb(),
+            )
+            return
 
-    if not calendars:
-        await safe_edit_text(checking, "❌ На сервере нет календарей.", reply_markup=retry_cancel_kb())
-        return
+        if not calendars:
+            await state.set_state(expected)
+            await safe_edit_text(checking, "❌ На сервере нет календарей.", reply_markup=retry_cancel_kb())
+            return
 
-    if len(calendars) == 1:
-        await _save_calendar(message.from_user.id, checking, state, server_url, username, password, calendars[0])
-        return
+        if len(calendars) == 1:
+            await _save_calendar(message.from_user.id, checking, state, server_url, username, password, calendars[0])
+            return
 
-    await state.update_data(
-        pick_server_url=server_url,
-        pick_username=username,
-        pick_password=encrypt(password),
-        calendars=calendars,
-    )
-    await state.set_state(CalendarSetup.pick_calendar)
-    await safe_edit_text(
-        checking,
-        "📅 На аккаунте несколько календарей. Куда добавлять события контестов?",
-        reply_markup=calendar_pick_kb(calendars),
-    )
+        await state.update_data(
+            pick_server_url=server_url,
+            pick_username=username,
+            pick_password=encrypt(password),
+            calendars=calendars,
+        )
+        await state.set_state(CalendarSetup.pick_calendar)
+        await safe_edit_text(
+            checking,
+            "📅 На аккаунте несколько календарей. Куда добавлять события контестов?",
+            reply_markup=calendar_pick_kb(calendars),
+        )
 
 
 @router.callback_query(F.data.startswith("cal_pick:"))

@@ -7,7 +7,7 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from db.models import Calendar, Contest, Registration, async_session, ensure_user_id
+from db.models import Calendar, Contest, Registration, async_session, ensure_user_id, utcnow
 from handlers.common import safe_edit_text
 from keyboards.inline import to_calendar_settings_kb
 from services.caldav_service import add_event, find_by_uid, friendly_error, list_events_between
@@ -103,6 +103,9 @@ async def _register_for_contest(callback: CallbackQuery, tg_id: int, contest_id:
     if contest is None:
         await callback.answer("Контест не найден", show_alert=True)
         return
+    if contest.start_time is not None and contest.start_time <= utcnow():
+        await callback.answer("⏰ Контест уже начался.", show_alert=True)
+        return
     registered_now = existing is None
     if registered_now:
         try:
@@ -149,19 +152,12 @@ async def _register_for_contest(callback: CallbackQuery, tg_id: int, contest_id:
 async def _process_next(tg_id: int, contest_id: int, message: Message) -> None:
     key = (tg_id, contest_id)
     state = PROCESSING.get(key)
-    if state is None or _is_stale(state):
-        PROCESSING.pop(key, None)
-        await safe_edit_text(
-            message,
-            "⏱ Операция прервана (таймаут обработки). Нажмите «Буду участвовать» ещё раз.",
-        )
+    if state is None:
         return
     contest = state["contest"]
     uid = f"cf-contest-{contest.cf_id}"
     try:
         while state["pending"]:
-            if _is_stale(state):
-                break
             task = state["pending"].pop(0)
             cal = task["calendar"]
             if cal.key_hash is not None and cal.key_hash != key_hash():
@@ -218,12 +214,6 @@ async def _process_next(tg_id: int, contest_id: int, message: Message) -> None:
             except Exception as exc:
                 task["status"] = "error"
                 task["detail"] = friendly_error(exc)
-        if _is_stale(state):
-            await safe_edit_text(
-                message,
-                "⏱ Операция прервана (таймаут обработки). Нажмите «Буду участвовать» ещё раз.",
-            )
-            return
         await _show_summary(tg_id, contest_id, message)
     finally:
         PROCESSING.pop((tg_id, contest_id), None)
@@ -255,7 +245,7 @@ async def _show_summary(tg_id: int, contest_id: int, message: Message) -> None:
     errors = [t for t in state["tasks"] if t["status"] == "error"]
 
     parts = [
-        "✅ Участие подтверждено! Уведомления о старте придут автоматически.",
+        "✅ Участие подтверждено!",
         format_contest_info(state["contest"]),
     ]
     if added:
