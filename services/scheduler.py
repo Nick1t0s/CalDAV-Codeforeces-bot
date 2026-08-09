@@ -57,17 +57,23 @@ async def broadcast_new_contests(bot: Bot, contests: list[Contest]) -> None:
                 )
             ).all()
         )
+    delivered_ids: list[int] = []
     for contest in contests:
         text = "\n".join(
             ["🔥 Новый контест на Codeforces!", "", format_contest_info(contest)]
         )
+        delivered = False
         for tg_id in tg_ids:
-            await _send_message(bot, tg_id, text, reply_markup=contest_announce_kb(contest.id))
-    # Помечаем анонсированными только после успешной рассылки, иначе при сбое
-    # контест останется неанонсированным и будет разослан повторно на следующем тике.
+            if await _send_message(bot, tg_id, text, reply_markup=contest_announce_kb(contest.id)):
+                delivered = True
+        if delivered:
+            delivered_ids.append(contest.id)
+    # Помечаем анонсированными только после успешной рассылки (хотя бы одному
+    # пользователю), иначе при сбое контест останется неанонсированным и будет
+    # разослан повторно на следующем тике.
     async with async_session() as session:
-        for contest in contests:
-            row = await session.get(Contest, contest.id)
+        for contest_id in delivered_ids:
+            row = await session.get(Contest, contest_id)
             if row is not None:
                 row.announced = True
         await session.commit()

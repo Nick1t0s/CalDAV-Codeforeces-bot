@@ -295,18 +295,31 @@ async def _save_calendar(
             )
             return
         data = await state.get_data()
-        session.add(
-            Calendar(
-                user_id=user_id,
-                type=data.get("cal_type", "caldav"),
-                server_url=server_url,
-                username=username,
-                password=encrypt(password),
-                key_hash=key_hash(),
-                calendar_url=calendar[0] if calendar else None,
-                name=calendar[1] if calendar else None,
-            )
+        cal = Calendar(
+            user_id=user_id,
+            type=data.get("cal_type", "caldav"),
+            server_url=server_url,
+            username=username,
+            password=encrypt(password),
+            key_hash=key_hash(),
+            calendar_url=calendar[0] if calendar else None,
+            name=calendar[1] if calendar else None,
         )
+        session.add(cal)
         await session.commit()
+    # Проверка count перед INSERT не атомарна (SQLite не умеет row-locks):
+    # при параллельных подключениях лимит мог быть превышен другим потоком,
+    # поэтому после коммита пересчитываем и откатываем лишний календарь.
+    async with async_session() as session:
+        count = await session.scalar(select(func.count(Calendar.id)).where(Calendar.user_id == user_id))
+        if count > MAX_CALENDARS:
+            await session.delete(cal)
+            await session.commit()
+            await state.clear()
+            await safe_edit_text(message, 
+                f"❌ Достигнут лимит календарей ({MAX_CALENDARS}).",
+                reply_markup=main_menu_kb(),
+            )
+            return
     await state.clear()
     await render_calendar_menu(tg_id, message, "✅ Календарь подключён!")

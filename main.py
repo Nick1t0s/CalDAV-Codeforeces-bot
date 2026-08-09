@@ -2,12 +2,13 @@ import asyncio
 import logging
 
 from aiogram import Bot, Dispatcher
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import ErrorEvent
 
 from config import BOT_TOKEN, SECRET_KEY
-from db.fsm_storage import SQLiteStorage
 from db.models import engine, init_db
 from handlers import calendar_setup, calendar_settings, contest, notify_settings, start
+from handlers.contest import cancel_background_tasks
 from services.scheduler import start_scheduler
 
 logger = logging.getLogger(__name__)
@@ -25,7 +26,7 @@ async def main() -> None:
     await init_db()
 
     bot = Bot(BOT_TOKEN)
-    dp = Dispatcher(storage=SQLiteStorage())
+    dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(start.router)
     dp.include_router(calendar_setup.router)
     dp.include_router(calendar_settings.router)
@@ -40,6 +41,7 @@ async def main() -> None:
     try:
         await dp.start_polling(bot, drop_pending_updates=True)
     finally:
+        await cancel_background_tasks()
         await dp.storage.close()
         await engine.dispose()
 

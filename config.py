@@ -7,7 +7,6 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 DB_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///bot.db")
-FSM_DB_PATH = os.getenv("FSM_DB_PATH", "fsm.db")
 SECRET_KEY = os.getenv("SECRET_KEY", "")
 
 

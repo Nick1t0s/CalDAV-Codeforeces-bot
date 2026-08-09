@@ -119,15 +119,6 @@ def contest_announce_kb(contest_db_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def warning_kb(calendar_id: int, contest_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="➕ Добавить", callback_data=f"warn_add:{calendar_id}:{contest_id}")],
-            [InlineKeyboardButton(text="Пропустить", callback_data=f"warn_skip:{calendar_id}:{contest_id}")],
-        ]
-    )
-
-
 def to_calendar_settings_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="📅 Настроить календари", callback_data="cal_settings")]]

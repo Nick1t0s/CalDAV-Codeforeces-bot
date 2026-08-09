@@ -9,22 +9,45 @@ from sqlalchemy.exc import IntegrityError
 
 from db.models import Calendar, Contest, Registration, async_session, ensure_user_id
 from handlers.common import safe_edit_text
-from keyboards.inline import to_calendar_settings_kb, warning_kb
-from services.caldav_service import add_event, find_by_uid, friendly_error
+from keyboards.inline import to_calendar_settings_kb
+from services.caldav_service import add_event, find_by_uid, friendly_error, list_events_between
 from services.crypto import KEY_CHANGED_MSG, key_hash
-from services.text import format_contest_info, to_utc_aware
+from services.text import format_contest_info, format_dt_msk, to_utc_aware
 
 logger = logging.getLogger(__name__)
 
 router = Router()
 
 PROCESSING_TIMEOUT_SECONDS = 300
-PROMPT_TIMEOUT_SECONDS = 120
 # Состояние обработки «Буду участвовать» на пользователя и контест: aiogram
 # обрабатывает апдейты конкурентно (create_task), поэтому запись ведётся по паре
 # (tg_id, contest_id), а сама обработка CalDAV запускается фоновой задачей —
 # нажатие на другой контест не блокируется текущей операцией.
 PROCESSING: dict[tuple[int, int], dict] = {}
+
+MAX_OVERLAPS_DISPLAYED = 3
+
+# Фоновые задачи обработки «Буду участвовать»: храним ссылки, чтобы задачи не
+# собирались GC и могли быть отменены при остановке бота (иначе — падение на
+# закрытой БД и «Task exception was never retrieved»).
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+def _spawn_task(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    task.add_done_callback(lambda t: None if t.cancelled() else t.exception())
+    return task
+
+
+async def cancel_background_tasks() -> None:
+    tasks = list(_BACKGROUND_TASKS)
+    _BACKGROUND_TASKS.clear()
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _int_param(data: str) -> int | None:
@@ -37,16 +60,6 @@ def _int_param(data: str) -> int | None:
 def _is_stale(state: dict) -> bool:
     age = datetime.now(timezone.utc).replace(tzinfo=None) - state.get("started_at", datetime.min)
     return age.total_seconds() > PROCESSING_TIMEOUT_SECONDS
-
-
-def _prompt_remaining(state: dict) -> float:
-    age = datetime.now(timezone.utc).replace(tzinfo=None) - state.get("prompted_at", datetime.min)
-    return max(1.0, PROMPT_TIMEOUT_SECONDS - age.total_seconds())
-
-
-def _prompt_stale(state: dict) -> bool:
-    age = datetime.now(timezone.utc).replace(tzinfo=None) - state.get("prompted_at", datetime.min)
-    return age.total_seconds() > PROMPT_TIMEOUT_SECONDS
 
 
 def calendar_display(cal: Calendar) -> str:
@@ -116,7 +129,7 @@ async def _register_for_contest(callback: CallbackQuery, tg_id: int, contest_id:
         )
         return
 
-    tasks = [{"calendar": cal, "status": "pending", "detail": "", "dup": False} for cal in calendars]
+    tasks = [{"calendar": cal, "status": "pending", "detail": "", "overlap": None} for cal in calendars]
     stale = PROCESSING.get((tg_id, contest_id))
     if stale is not None and _is_stale(stale):
         PROCESSING.pop((tg_id, contest_id), None)
@@ -124,16 +137,13 @@ async def _register_for_contest(callback: CallbackQuery, tg_id: int, contest_id:
         "contest": contest,
         "tasks": tasks,
         "pending": list(tasks),
-        "current": None,
-        "future": None,
-        "prompted_at": None,
         "started_at": datetime.now(timezone.utc).replace(tzinfo=None),
     }
     await safe_edit_text(
         callback.message,
         f"✅ Участие подтверждено! ⏳ Добавляю события в календари…\n\n{format_contest_info(contest)}",
     )
-    asyncio.create_task(_process_next(tg_id, contest_id, callback.message))
+    _spawn_task(_process_next(tg_id, contest_id, callback.message))
 
 
 async def _process_next(tg_id: int, contest_id: int, message: Message) -> None:
@@ -168,71 +178,30 @@ async def _process_next(tg_id: int, contest_id: int, message: Message) -> None:
                 continue
             if exists:
                 task["status"] = "warning"
-                state["current"] = task
-                state["prompted_at"] = datetime.now(timezone.utc).replace(tzinfo=None)
-                state["future"] = asyncio.get_running_loop().create_future()
-                await safe_edit_text(
-                    message,
-                    f"⚠️ В календаре «{calendar_display(cal)}» уже есть событие для контеста «{contest.name}».\n\n"
-                    f"{format_contest_info(contest)}\n\n"
-                    "Что сделать?",
-                    reply_markup=warning_kb(cal.id, contest_id),
-                )
-                try:
-                    add_duplicate = await asyncio.wait_for(
-                        state["future"], timeout=_prompt_remaining(state)
-                    )
-                except asyncio.TimeoutError:
-                    add_duplicate = False
-                finally:
-                    state["current"] = None
-                    state["future"] = None
-                    state["prompted_at"] = None
-                if add_duplicate:
-                    times = _event_times(contest)
-                    if times is None:
-                        task["status"] = "error"
-                        task["detail"] = "Контест без времени старта"
-                    else:
-                        dup_uid = f"cf-contest-{contest.cf_id}-dup"
-                        try:
-                            dup_exists = await asyncio.to_thread(
-                                find_by_uid, cal.server_url, cal.username, cal.password, dup_uid, cal.calendar_url
-                            )
-                        except Exception as exc:
-                            task["status"] = "error"
-                            task["detail"] = friendly_error(exc)
-                            continue
-                        if dup_exists:
-                            task["status"] = "added"
-                            task["dup"] = True
-                            task["detail"] = "уже было"
-                            continue
-                        try:
-                            await asyncio.to_thread(
-                                add_event,
-                                cal.server_url,
-                                cal.username,
-                                cal.password,
-                                uid=dup_uid,
-                                summary=contest.name,
-                                start=times[0],
-                                end=times[1],
-                                calendar_url=cal.calendar_url,
-                            )
-                            task["status"] = "added"
-                            task["dup"] = True
-                        except Exception as exc:
-                            task["status"] = "error"
-                            task["detail"] = friendly_error(exc)
-                else:
-                    task["status"] = "not_added"
+                task["detail"] = "контест уже есть в календаре"
                 continue
             times = _event_times(contest)
             if times is None:
                 task["status"] = "error"
                 task["detail"] = "Контест без времени старта"
                 continue
+            try:
+                overlaps = await asyncio.to_thread(
+                    list_events_between,
+                    cal.server_url,
+                    cal.username,
+                    cal.password,
+                    times[0],
+                    times[1],
+                    cal.calendar_url,
+                    uid,
+                )
+            except Exception as exc:
+                logger.warning("Failed to list events for overlap check: %s", exc)
+                overlaps = []
+                task["overlap_unknown"] = True
+            if overlaps:
+                task["overlap"] = _render_overlaps(overlaps)
             try:
                 await asyncio.to_thread(
                     add_event,
@@ -260,51 +229,29 @@ async def _process_next(tg_id: int, contest_id: int, message: Message) -> None:
         PROCESSING.pop((tg_id, contest_id), None)
 
 
-@router.callback_query(F.data.startswith("warn_add:"))
-async def warn_add(callback: CallbackQuery) -> None:
-    await _warn_decision(callback, add_duplicate=True)
-
-
-@router.callback_query(F.data.startswith("warn_skip:"))
-async def warn_skip(callback: CallbackQuery) -> None:
-    await _warn_decision(callback, add_duplicate=False)
-
-
-async def _warn_decision(callback: CallbackQuery, add_duplicate: bool) -> None:
-    tg_id = callback.from_user.id
-    parts = callback.data.split(":")
-    try:
-        cal_id = int(parts[1])
-        contest_id = int(parts[2])
-    except (ValueError, IndexError):
-        await callback.answer("Неверные данные", show_alert=True)
-        return
-    key = (tg_id, contest_id)
-    state = PROCESSING.get(key)
-    task = state.get("current") if state else None
-    future = state.get("future") if state else None
-    if (
-        state is None
-        or _is_stale(state)
-        or _prompt_stale(state)
-        or task is None
-        or task["calendar"].id != cal_id
-        or future is None
-        or future.done()
-    ):
-        await callback.answer("Операция устарела", show_alert=True)
-        return
-    future.set_result(add_duplicate)
-    state["current"] = None
-    await callback.answer()
+def _render_overlaps(overlaps: list[dict]) -> str:
+    shown = overlaps[:MAX_OVERLAPS_DISPLAYED]
+    parts = [f"«{e['summary']}» {format_dt_msk(e['start'])}–{format_dt_msk(e['end'])}" for e in shown]
+    rest = len(overlaps) - len(shown)
+    if rest > 0:
+        parts.append(f"и ещё {rest}")
+    return ", ".join(parts)
 
 
 async def _show_summary(tg_id: int, contest_id: int, message: Message) -> None:
     state = PROCESSING.get((tg_id, contest_id))
     if state is None:
         return
-    added = [t for t in state["tasks"] if t["status"] == "added" and not t["dup"]]
-    warnings = [t for t in state["tasks"] if t["dup"] or t["status"] == "not_added"]
+    added = [
+        t for t in state["tasks"]
+        if t["status"] == "added" and not t.get("overlap") and not t.get("overlap_unknown")
+    ]
+    warnings = [
+        t
+        for t in state["tasks"]
+        if t["status"] == "warning"
+        or (t["status"] == "added" and (t.get("overlap") or t.get("overlap_unknown")))
+    ]
     errors = [t for t in state["tasks"] if t["status"] == "error"]
 
     parts = [
@@ -316,11 +263,14 @@ async def _show_summary(tg_id: int, contest_id: int, message: Message) -> None:
             "✅ Успешно добавлено в:\n" + "\n".join(f"• {calendar_display(t['calendar'])}" for t in added)
         )
     if warnings:
-        lines = [
-            f"• {calendar_display(t['calendar'])} — "
-            f"{t.get('detail') or ('добавлено' if t['status'] == 'added' else 'не добавлено')}"
-            for t in warnings
-        ]
+        lines = []
+        for t in warnings:
+            if t["status"] == "warning":
+                lines.append(f"• {calendar_display(t['calendar'])} — {t['detail']}")
+            elif t.get("overlap_unknown"):
+                lines.append(f"• {calendar_display(t['calendar'])} — добавлено, проверить пересечения не удалось")
+            else:
+                lines.append(f"• {calendar_display(t['calendar'])} — добавлено, пересекается с {t['overlap']}")
         parts.append("⚠️ Наслоение событий:\n" + "\n".join(lines))
     if errors:
         parts.append(
