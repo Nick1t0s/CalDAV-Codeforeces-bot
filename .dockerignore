@@ -1,0 +1,14 @@
+.git
+.gitignore
+.idea
+.venv
+venv
+__pycache__
+*.pyc
+*.db
+.env
+plan.md
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.override.yml

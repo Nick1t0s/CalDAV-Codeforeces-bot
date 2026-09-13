@@ -1,0 +1,14 @@
+services:
+  bot:
+    build: .
+    image: caldav-codeforces-bot:latest
+    container_name: caldav-codeforces-bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: sqlite+aiosqlite:////data/bot.db
+    volumes:
+      - bot-data:/data
+
+volumes:
+  bot-data:
