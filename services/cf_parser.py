@@ -2,8 +2,10 @@ import logging
 from datetime import datetime, timezone
 
 import aiohttp
+from aiohttp_socks import ProxyConnector
 from sqlalchemy import select
 
+from config import PROXY_URL, normalize_proxy_url_for_aiohttp
 from db.models import Contest, async_session, utcnow
 
 logger = logging.getLogger(__name__)
@@ -11,8 +13,15 @@ logger = logging.getLogger(__name__)
 CF_CONTESTS_URL = "https://codeforces.com/api/contest.list"
 
 
+def _proxy_connector() -> ProxyConnector | None:
+    if not PROXY_URL:
+        return None
+    # rdns=True: DNS резолвится на стороне прокси (семантика socks5h).
+    return ProxyConnector.from_url(normalize_proxy_url_for_aiohttp(PROXY_URL), rdns=True)
+
+
 async def parse_contests() -> list[Contest]:
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(connector=_proxy_connector()) as session:
         async with session.get(CF_CONTESTS_URL, timeout=aiohttp.ClientTimeout(total=30)) as response:
             if response.status != 200:
                 raise RuntimeError(f"Codeforces API HTTP error: {response.status}")

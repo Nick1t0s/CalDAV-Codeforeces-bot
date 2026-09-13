@@ -11,6 +11,7 @@ from caldav.lib.error import (
 )
 from dateutil.rrule import rrulestr
 
+from config import CALDAV_PROXY_URL
 from services.crypto import KeyChangedError, KEY_CHANGED_MSG, decrypt
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ def _client(server_url: str, username: str, password: str, *, encrypted: bool = 
         password=decrypt(password) if encrypted else password,
         timeout=30,
         require_tls=False,
+        proxy=CALDAV_PROXY_URL or None,
     )
 
 

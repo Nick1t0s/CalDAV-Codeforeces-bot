@@ -5,6 +5,10 @@ services:
     container_name: caldav-codeforces-bot
     restart: unless-stopped
     env_file: .env
+    # Даёт доступ из контейнера к хост-машине по host.docker.internal
+    # (например, до прокси, запущенного на хосте; на Windows/macOS работает и так).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       DATABASE_URL: sqlite+aiosqlite:////data/bot.db
     volumes:

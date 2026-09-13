@@ -57,6 +57,8 @@ Fill in the required values:
 | `PARSE_INTERVAL_SECONDS` | no | Codeforces polling interval (default `600`) |
 | `REMIND_INTERVAL_SECONDS` | no | Reminder check interval (default `10`) |
 | `ALLOW_LOCAL_CALDAV` | no | Allow CalDAV servers on local/private addresses (default `false`) |
+| `PROXY_URL` | no | Proxy for Telegram API and Codeforces API requests |
+| `CALDAV_PROXY_URL` | no | Proxy for CalDAV requests only (empty = direct connection) |
 
 > **Keep `SECRET_KEY` stable.** Losing it makes stored calendar passwords undecryptable — users will have to reconnect their calendars.
 
@@ -129,6 +131,22 @@ docker-compose.yml         # service + bot-data volume
 - A fingerprint of `SECRET_KEY` is stored per calendar; if the key changes, decryption is refused and users are prompted to reconnect instead of silently failing.
 - CalDAV URLs pointing to localhost / private networks are rejected unless `ALLOW_LOCAL_CALDAV=true`.
 - Plain HTTP (non-TLS) CalDAV endpoints require an explicit confirmation step.
+
+## Proxy
+
+All outbound traffic goes through three independent network stacks: Telegram API (aiogram/aiohttp), Codeforces API (aiohttp) and CalDAV servers (niquests via the caldav library). Proxy support is wired into each of them explicitly:
+
+- `PROXY_URL` — proxy for **Telegram and Codeforces**.
+- `CALDAV_PROXY_URL` — proxy for **CalDAV only**. Leave it empty when the CalDAV server is reachable directly (e.g. a Yandex calendar or a server on the LAN with `ALLOW_LOCAL_CALDAV=true`) — then only the blocked services go through the proxy.
+
+Supported formats: `http://user:pass@host:port`, `socks4://...`, `socks5://...`, `socks5h://...` (with `socks5h` DNS names are resolved by the proxy itself — recommended). The scheme and port are validated at startup: an invalid `PROXY_URL` / `CALDAV_PROXY_URL` prevents the bot from starting instead of silently leaking traffic.
+
+**Docker networking quirks:**
+
+- A proxy running on the host machine is **not** reachable via `localhost` from inside the container — that is the container itself. Use `host.docker.internal`, e.g. `PROXY_URL=socks5h://host.docker.internal:1080`. `docker-compose.yml` already contains the `extra_hosts: host-gateway` mapping, so this works on Linux too.
+- A proxy running in another container: use the service name / container name on the same Docker network, e.g. `PROXY_URL=http://proxy:8888`.
+- If you set `localhost` / `127.0.0.1` in the proxy URL, the bot logs a warning at startup.
+
 
 ## Known limitations
 
